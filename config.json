@@ -1,0 +1,30 @@
+{
+    "frequency": {
+        "f_min": 4000,
+        "f_max": 4000,
+        "n_freq": 1
+    },
+    "physics": {
+        "c": 343.0
+    },
+    "simulation": {
+        "n_waves": 100,
+        "n_realizations": 1000
+    },
+    "output": {
+        "plot_plane": "X",
+        "save_figures": true,
+        "figure_format": "png",
+        "output_dir": "results"
+    },
+    "eigenvalues": {
+        "compute": true,
+        "n_components": 100,
+        "n_oversamples": 10,
+        "n_power_iter": 2,
+        "save_eigenvectors": false,
+        "plot_eigenvectors": false,
+        "n_vectors_to_plot": 8,
+        "plot_component": "real"
+    }
+}
