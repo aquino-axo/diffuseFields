@@ -1,0 +1,33 @@
+{
+    "input": {
+        "transfer_matrix_path": "data/Tmatrix.npy",
+        "coordinates_path": "data/coordinates.npy",
+        "directions_path": "data/directions.npy"
+    },
+    "physics": {
+        "frequencies": [100.0, 200.0, 500.0],
+        "speed_of_sound": 343.0,
+        "amplitude": 1.0
+    },
+    "cone_geometry": {
+        "half_angle": 0.244346,
+        "height": 0.5
+    },
+    "eigenvalues": {
+        "var_ratio": 0.99,
+        "n_components": null,
+        "solver": "direct",
+        "n_oversamples": 10,
+        "n_power_iter": 2,
+        "freq_indices": null
+    },
+    "output": {
+        "output_dir": "results_cone",
+        "save_figures": true,
+        "figure_format": "png",
+        "save_eigenvectors": true,
+        "plot_eigenvectors": true,
+        "n_vectors_to_plot": 4,
+        "plot_component": "magnitude"
+    }
+}

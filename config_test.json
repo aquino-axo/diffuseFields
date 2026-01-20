@@ -1,0 +1,30 @@
+{
+    "frequency": {
+        "f_min": 500,
+        "f_max": 500,
+        "n_freq": 1
+    },
+    "physics": {
+        "c": 343.0
+    },
+    "simulation": {
+        "n_waves": 50,
+        "n_realizations": 100
+    },
+    "output": {
+        "plot_plane": "Z",
+        "save_figures": true,
+        "figure_format": "png",
+        "output_dir": "results_test"
+    },
+    "eigenvalues": {
+        "compute": true,
+        "n_components": 20,
+        "n_oversamples": 5,
+        "n_power_iter": 1,
+        "save_eigenvectors": true,
+        "plot_eigenvectors": true,
+        "n_vectors_to_plot": 4,
+        "plot_component": "real"
+    }
+}

@@ -1,0 +1,31 @@
+# Python bytecode
+*.pyc
+*.pyo
+__pycache__/
+
+# NumPy data files
+*.npy
+*.npz
+
+# Image files (results)
+*.png
+*.jpeg
+*.jpg
+*.svg
+*.eps
+*.pdf
+
+# Results directories
+results/
+results_*/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
