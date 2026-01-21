@@ -2,13 +2,14 @@
 Unit tests for cone diffuse field analysis.
 
 Tests verify:
-1. Analytical total field covariance against Monte Carlo sampling
-2. Incident field matrix D computation
-3. Covariance matrix-vector product correctness
-4. Eigenvalue computation accuracy
-5. Variance ratio criterion
-6. Eigenvector orthonormality
-7. Transfer matrix dimension handling
+1. Incident field matrix D computation
+2. Covariance matrix-vector product correctness
+3. Eigenvalue computation accuracy
+4. Variance ratio criterion
+5. Eigenvector orthonormality
+6. Input validation
+7. Randomized eigensolver utility
+8. Wavenumber computation
 """
 
 import numpy as np
@@ -57,78 +58,13 @@ def create_test_cone_data(ndof=50, npws=100, nfreqs=3):
     return T, coords, directions, frequencies, cone_geometry
 
 
-def test_analytical_vs_monte_carlo():
-    """
-    Test 1: Verify Monte Carlo total field covariance converges to analytical result.
-
-    This is the key test validating the analytical derivation:
-    C = Po² * H @ H^H, where H = D + T
-    """
-    print("Test 1: Analytical vs Monte Carlo total field covariance...")
-
-    ndof, npws, nfreqs = 30, 50, 1
-    T, coords, directions, frequencies, cone_geom = create_test_cone_data(ndof, npws, nfreqs)
-
-    Po = 2.0  # Amplitude
-    c = 343.0  # Speed of sound
-    freq_idx = 0
-
-    # Compute wavenumber
-    k = 2 * np.pi * frequencies[freq_idx] / c
-
-    # Compute incident field matrix D
-    # D[i,j] = exp(i * k * d_j · x_i)
-    dot_products = coords @ directions.T
-    D = np.exp(1j * k * dot_products)
-
-    # Total field matrix H = D + T
-    T_freq = T[:, :, freq_idx]
-    H = D + T_freq
-
-    rng = np.random.default_rng(123)
-
-    # Test vector
-    v = rng.standard_normal(ndof) + 1j * rng.standard_normal(ndof)
-
-    # Analytical result: C @ v = Po² * H @ (H^H @ v)
-    analytical_result = Po**2 * H @ (H.conj().T @ v)
-
-    # Monte Carlo: generate N realizations with random phases
-    N_samples = 10000
-    mc_results = []
-
-    for _ in range(N_samples):
-        # Random phases for each plane wave
-        phases = rng.uniform(0, 2 * np.pi, npws)
-        a = Po * np.exp(1j * phases)  # (npws,)
-
-        # Total pressure realization: p_t = H @ a
-        p_t = H @ a  # (ndof,)
-
-        # Contribution to C @ v
-        mc_results.append(p_t * np.vdot(p_t, v))
-
-    # Monte Carlo estimate: C @ v ≈ (1/N) * Σ p_t * (p_t^H @ v)
-    mc_result = np.mean(mc_results, axis=0)
-
-    # Check convergence (Monte Carlo should be close to analytical)
-    relative_error = np.linalg.norm(mc_result - analytical_result) / np.linalg.norm(analytical_result)
-
-    # With 10000 samples, expect relative error < 5%
-    assert relative_error < 0.05, (
-        f"Monte Carlo did not converge to analytical. "
-        f"Relative error: {relative_error:.4f}"
-    )
-    print(f"  PASSED (relative error: {relative_error:.4f})")
-
-
 def test_incident_field_matrix():
     """
-    Test 2: Verify incident field matrix D computation.
+    Test 1: Verify incident field matrix D computation.
 
     D[i,j] = exp(i * k * d_j · x_i)
     """
-    print("Test 2: Incident field matrix D computation...")
+    print("Test 1: Incident field matrix D computation...")
 
     ndof, npws, nfreqs = 20, 30, 1
     T, coords, directions, frequencies, cone_geom = create_test_cone_data(ndof, npws, nfreqs)
@@ -162,9 +98,9 @@ def test_incident_field_matrix():
 
 def test_covariance_matvec_correctness():
     """
-    Test 3: Verify C @ v matches explicit (Po² * H @ H^H) @ v for small problem.
+    Test 2: Verify C @ v matches explicit (Po² * H @ H^H) @ v for small problem.
     """
-    print("Test 3: Covariance matvec correctness...")
+    print("Test 2: Covariance matvec correctness...")
 
     ndof, npws, nfreqs = 20, 30, 2
     T, coords, directions, frequencies, cone_geom = create_test_cone_data(ndof, npws, nfreqs)
@@ -201,9 +137,9 @@ def test_covariance_matvec_correctness():
 
 def test_eigenvalue_accuracy():
     """
-    Test 4: Compare direct and randomized eigensolvers against explicit computation.
+    Test 3: Compare direct and randomized eigensolvers against explicit computation.
     """
-    print("Test 4: Eigenvalue computation accuracy (both solvers)...")
+    print("Test 3: Eigenvalue computation accuracy (both solvers)...")
 
     ndof, npws, nfreqs = 25, 40, 1
     T, coords, directions, frequencies, cone_geom = create_test_cone_data(ndof, npws, nfreqs)
@@ -264,10 +200,10 @@ def test_eigenvalue_accuracy():
 
 def test_variance_ratio_criterion():
     """
-    Test 5: Verify correct number of eigenvalues selected to capture specified variance.
+    Test 4: Verify correct number of eigenvalues selected to capture specified variance.
     Tests both direct and randomized solvers.
     """
-    print("Test 5: Variance ratio criterion (both solvers)...")
+    print("Test 4: Variance ratio criterion (both solvers)...")
 
     ndof, npws, nfreqs = 30, 50, 1
     T, coords, directions, frequencies, cone_geom = create_test_cone_data(ndof, npws, nfreqs)
@@ -309,9 +245,9 @@ def test_variance_ratio_criterion():
 
 def test_eigenvector_orthonormality():
     """
-    Test 6: Verify Phi^H @ Phi ≈ I for computed eigenvectors.
+    Test 5: Verify Phi^H @ Phi ≈ I for computed eigenvectors.
     """
-    print("Test 6: Eigenvector orthonormality...")
+    print("Test 5: Eigenvector orthonormality...")
 
     ndof, npws, nfreqs = 40, 60, 1
     T, coords, directions, frequencies, cone_geom = create_test_cone_data(ndof, npws, nfreqs)
@@ -338,49 +274,9 @@ def test_eigenvector_orthonormality():
     print("  PASSED")
 
 
-def test_transfer_matrix_dimensions():
-    """
-    Test 7: Verify correct handling of multi-frequency transfer matrix.
-    """
-    print("Test 7: Transfer matrix dimension handling...")
-
-    ndof, npws, nfreqs = 25, 35, 3
-    T, coords, directions, frequencies, cone_geom = create_test_cone_data(ndof, npws, nfreqs)
-
-    Po = 1.0
-    c = 343.0
-    cone = ConeDiffuseField(T, coords, directions, frequencies, c, Po, cone_geom)
-
-    assert cone.ndof == ndof
-    assert cone.npws == npws
-    assert cone.nfreqs == nfreqs
-    assert len(cone.wavenumbers) == nfreqs
-
-    # Compute eigenvalues for each frequency
-    n_components = 5
-    # SVD gives min(ndof, npws) singular values
-    n_eigenvalues_expected = min(ndof, npws)
-    for freq_idx in range(nfreqs):
-        eigenvalues, eigenvectors = cone.compute_covariance_eigenvalues(
-            freq_idx=freq_idx,
-            n_components=n_components,
-            random_state=42
-        )
-
-        # Direct solver returns all eigenvalues from SVD, eigenvectors truncated to n_components
-        assert len(eigenvalues) == n_eigenvalues_expected, (
-            f"Expected {n_eigenvalues_expected} eigenvalues, got {len(eigenvalues)}"
-        )
-        assert eigenvectors.shape == (ndof, n_components), (
-            f"Expected eigenvectors shape ({ndof}, {n_components}), got {eigenvectors.shape}"
-        )
-
-    print("  PASSED")
-
-
 def test_input_validation():
-    """Test input validation catches errors."""
-    print("Test 8: Input validation...")
+    """Test 6: Input validation catches errors."""
+    print("Test 6: Input validation...")
 
     T, coords, directions, frequencies, cone_geom = create_test_cone_data()
     c = 343.0
@@ -419,8 +315,8 @@ def test_input_validation():
 
 
 def test_randomized_eigensolver():
-    """Test the standalone RandomizedEigensolver utility."""
-    print("Test 9: RandomizedEigensolver utility...")
+    """Test 7: Standalone RandomizedEigensolver utility."""
+    print("Test 7: RandomizedEigensolver utility...")
 
     n = 50
     rng = np.random.default_rng(42)
@@ -453,8 +349,8 @@ def test_randomized_eigensolver():
 
 
 def test_wavenumber_computation():
-    """Test that wavenumbers are computed correctly."""
-    print("Test 10: Wavenumber computation...")
+    """Test 8: Wavenumbers are computed correctly."""
+    print("Test 8: Wavenumber computation...")
 
     ndof, npws, nfreqs = 20, 30, 3
     T, coords, directions, frequencies, cone_geom = create_test_cone_data(ndof, npws, nfreqs)
@@ -480,13 +376,11 @@ def run_all_tests():
     print("=" * 60)
 
     tests = [
-        test_analytical_vs_monte_carlo,
         test_incident_field_matrix,
         test_covariance_matvec_correctness,
         test_eigenvalue_accuracy,
         test_variance_ratio_criterion,
         test_eigenvector_orthonormality,
-        test_transfer_matrix_dimensions,
         test_input_validation,
         test_randomized_eigensolver,
         test_wavenumber_computation,

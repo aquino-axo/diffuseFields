@@ -18,7 +18,7 @@
         "height": 0.5
     },
     "eigenvalues": {
-        "var_ratio": 0.99,
+        "var_ratio": 0.999,
         "n_components": null,
         "solver": "direct",
         "freq_indices": null
