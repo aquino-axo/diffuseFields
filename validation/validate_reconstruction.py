@@ -182,6 +182,149 @@ class ReconstructionValidator:
 
         return fig
 
+    def plot_error_histogram(
+        self,
+        results: Dict,
+        n_bins: int = 30,
+        title: str = "Reconstruction Error Distribution",
+        save_path: Optional[Path] = None
+    ) -> plt.Figure:
+        """
+        Plot histogram of all errors aggregated across frequencies.
+
+        Parameters
+        ----------
+        results : dict
+            Results from validate() method.
+        n_bins : int
+            Number of histogram bins.
+        title : str
+            Plot title.
+        save_path : Path, optional
+            Path to save the figure.
+
+        Returns
+        -------
+        fig : Figure
+            Matplotlib figure.
+        """
+        # Flatten all errors across frequencies
+        all_errors = []
+        for errors in results['per_field_errors']:
+            all_errors.extend(errors)
+        all_errors = np.array(all_errors)
+
+        fig, ax = plt.subplots(figsize=(8, 5))
+
+        # Use log scale bins
+        log_min = np.floor(np.log10(all_errors.min()))
+        log_max = np.ceil(np.log10(all_errors.max()))
+        bins = np.logspace(log_min, log_max, n_bins + 1)
+
+        ax.hist(all_errors, bins=bins, edgecolor='black', alpha=0.7)
+        ax.set_xscale('log')
+        ax.set_xlabel('Relative L2 Error')
+        ax.set_ylabel('Count')
+        ax.set_title(title)
+        ax.grid(True, alpha=0.3)
+
+        # Add 95th percentile annotation
+        p95 = np.percentile(all_errors, 95)
+        ax.axvline(p95, color='red', linestyle='--', linewidth=2, label=f'95th percentile: {p95:.4f}')
+        ax.legend()
+
+        plt.tight_layout()
+
+        if save_path:
+            fig.savefig(save_path, dpi=150, bbox_inches='tight')
+
+        return fig
+
+    def plot_octave_band_histograms(
+        self,
+        results: Dict,
+        n_bins: int = 30,
+        save_path: Optional[Path] = None
+    ) -> plt.Figure:
+        """
+        Plot histograms for each octave band in a grid layout.
+
+        Parameters
+        ----------
+        results : dict
+            Results from validate() method.
+        n_bins : int
+            Number of histogram bins.
+        save_path : Path, optional
+            Path to save the figure.
+
+        Returns
+        -------
+        fig : Figure
+            Matplotlib figure.
+        """
+        # Define octave bands (center frequency, lower bound, upper bound)
+        octave_bands = [
+            (250, 177, 354),
+            (500, 354, 707),
+            (1000, 707, 1414),
+            (2000, 1414, 2828),
+            (4000, 2828, 5657),
+        ]
+
+        frequencies = results['frequencies']
+        per_field_errors = results['per_field_errors']
+
+        # Collect errors for each octave band
+        band_errors = {}
+        for center, low, high in octave_bands:
+            errors = []
+            for i, freq in enumerate(frequencies):
+                if low <= freq < high:
+                    errors.extend(per_field_errors[i])
+            if errors:
+                band_errors[center] = np.array(errors)
+
+        # Create subplots
+        n_bands = len(band_errors)
+        if n_bands == 0:
+            return None
+
+        fig, axes = plt.subplots(2, 3, figsize=(14, 8))
+        axes = axes.flatten()
+
+        for idx, (center, errors) in enumerate(band_errors.items()):
+            ax = axes[idx]
+
+            # Use log scale bins
+            log_min = np.floor(np.log10(errors.min()))
+            log_max = np.ceil(np.log10(errors.max()))
+            bins = np.logspace(log_min, log_max, n_bins + 1)
+
+            ax.hist(errors, bins=bins, edgecolor='black', alpha=0.7)
+            ax.set_xscale('log')
+            ax.set_xlabel('Relative L2 Error')
+            ax.set_ylabel('Count')
+            ax.set_title(f'{center} Hz Octave Band')
+            ax.grid(True, alpha=0.3)
+
+            # Add 95th percentile
+            p95 = np.percentile(errors, 95)
+            ax.axvline(p95, color='red', linestyle='--', linewidth=1.5, label=f'95th: {p95:.4f}')
+            ax.legend(fontsize=8)
+
+        # Hide unused axes
+        for idx in range(len(band_errors), len(axes)):
+            axes[idx].set_visible(False)
+
+        fig.suptitle('Reconstruction Error by Octave Band', fontsize=12)
+        plt.tight_layout()
+
+        if save_path:
+            fig.savefig(save_path, dpi=150, bbox_inches='tight')
+
+        return fig
+
 
 def run_validation(
     eigendata_dir: str,

@@ -79,6 +79,18 @@ def run_reconstruction_validation(
         save_path=output_dir / "reconstruction_error.png"
     )
 
+    # Generate histograms
+    validator.plot_error_histogram(
+        results,
+        title="Reconstruction Error Distribution (All Frequencies)",
+        save_path=output_dir / "error_histogram.png"
+    )
+
+    validator.plot_octave_band_histograms(
+        results,
+        save_path=output_dir / "error_histogram_octave_bands.png"
+    )
+
     # Print summary
     print("\nReconstruction Error (using all stored eigenvectors per frequency):")
     print("-" * 60)
