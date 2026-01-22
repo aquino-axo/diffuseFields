@@ -1,0 +1,19 @@
+{
+    "input": {
+        "source_coordinates_path": "data/coordinates.npy",
+        "target_coordinates_path": "data/target_same.npy",
+        "pressure_fields_path": "results_cone/eigendata_freq0.npz",
+        "input_type": "eigendata"
+    },
+    "output": {
+        "output_dir": "results_interpolation",
+        "save_fields": true
+    },
+    "visualization": {
+        "enabled": true,
+        "n_fields": 3,
+        "component": "magnitude",
+        "save_figures": true,
+        "figure_format": "png"
+    }
+}

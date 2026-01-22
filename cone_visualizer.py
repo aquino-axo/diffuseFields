@@ -22,11 +22,12 @@ class ConeVisualizer:
     ----------
     coordinates : ndarray
         Node coordinates on cone surface, shape (ndof, 3).
-    cone_geometry : dict
+    cone_geometry : dict, optional
         Cone geometry parameters with keys:
         - 'half_angle': half-angle of the cone in radians
         - 'height': height of the cone
         The base_diameter is computed as 2 * height * tan(half_angle).
+        If None, geometry metadata is not stored.
 
     Attributes
     ----------
@@ -37,15 +38,15 @@ class ConeVisualizer:
     def __init__(
         self,
         coordinates: np.ndarray,
-        cone_geometry: Dict[str, float]
+        cone_geometry: Optional[Dict[str, float]] = None
     ):
         self.coordinates = np.asarray(coordinates, dtype=np.float64)
-        self.cone_geometry = dict(cone_geometry)  # Make a copy
+        self.cone_geometry = dict(cone_geometry) if cone_geometry else None
 
         self._validate_inputs()
 
-        # Compute base_diameter if not provided
-        if 'base_diameter' not in self.cone_geometry:
+        # Compute base_diameter if geometry provided and not already present
+        if self.cone_geometry and 'base_diameter' not in self.cone_geometry:
             self.cone_geometry['base_diameter'] = (
                 2 * self.cone_geometry['height'] *
                 np.tan(self.cone_geometry['half_angle'])
@@ -61,10 +62,11 @@ class ConeVisualizer:
                 f"got {self.coordinates.shape}"
             )
 
-        required_keys = {'half_angle', 'height'}
-        missing = required_keys - set(self.cone_geometry.keys())
-        if missing:
-            raise ValueError(f"cone_geometry missing keys: {missing}")
+        if self.cone_geometry:
+            required_keys = {'half_angle', 'height'}
+            missing = required_keys - set(self.cone_geometry.keys())
+            if missing:
+                raise ValueError(f"cone_geometry missing keys: {missing}")
 
     def _extract_component(
         self,
