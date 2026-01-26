@@ -341,25 +341,110 @@ python run_diffuse_field.py config.json
 - Normalized Mean Square Error (NMSE) vs frequency
 - Eigenvalue decay plots
 
+## 5. Eigenvector Basis Validation
+
+Validates the accuracy and efficiency of the CPSD eigenvector basis through two complementary analyses.
+
+### Usage
+
+```bash
+# Run both analyses
+python validation/run_validation.py \
+    --eigendata-dir results_cone \
+    --validation-set validation_data.npy \
+    --output-dir validation_results \
+    --analysis both
+
+# Run only basis dimension analysis
+python validation/run_validation.py \
+    --eigendata-dir results_cone \
+    --output-dir validation_results \
+    --analysis dimension
+
+# Run only reconstruction validation
+python validation/run_validation.py \
+    --eigendata-dir results_cone \
+    --validation-set validation_data.npy \
+    --output-dir validation_results \
+    --analysis reconstruction
+```
+
+### Basis Dimension Analysis
+
+Analyzes eigenvalue decay to determine how many modes are needed at each frequency.
+
+**Output**:
+
+- Minimum modes needed for 90%, 95%, 99%, 99.9% variance capture
+- Scaling law fit: N_modes ≈ A × f^β (theoretical β = 2)
+- Eigenvalue decay and cumulative variance plots
+
+### Reconstruction Accuracy Validation
+
+Tests whether the eigenvector basis can accurately reconstruct pressure fields from a validation set.
+
+**Metrics**:
+
+- Relative L2 reconstruction error per frequency
+- Error histograms by octave band
+
+**Validation Set Requirements**:
+
+- Shape: `(ndof, n_fields, nfreqs)` - multiple pressure field realizations
+- Should contain fields not used in eigenvalue computation
+
+### Preparing Validation Data
+
+Use `compute_total_field.py` to generate total pressure fields (incident + scattered) for validation:
+
+```bash
+python validation/compute_total_field.py \
+    --transfer-matrix data/Tmatrix_cone_only.npy \
+    --coordinates data/coordinates_cone_only.npy \
+    --directions data/directions.npy \
+    --frequencies 300 400 500 \
+    --output validation_total_field.npy
+```
+
+This computes H = D + T where:
+
+- D is the incident field from plane waves
+- T is the scattered field from the transfer matrix
+
+### Validation Output Files
+
+```
+validation_results/
+├── eigenvalue_decay.png           # Eigenvalue decay curves
+├── basis_dimension_report.txt     # Mode requirements and scaling laws
+├── reconstruction_error.png       # Mean/max error vs frequency
+├── error_histogram.png            # Overall error distribution
+└── error_histogram_octave_bands.png  # Error by octave band
+```
+
 ## Typical Workflow
 
 ### Cone Surface Analysis
 
 ```bash
 # 1. Filter mesh to exclude base disk
-python filter_cone_mesh.py
+python filter_cone_mesh.py config_filter.json
 
 # 2. Run eigenanalysis on cone surface
 python run_cone_analysis.py config_cone_range.json
 
-# 3. (Optional) Interpolate eigenvectors to different mesh
+# 3. (Optional) Validate the eigenvector basis
+python validation/compute_total_field.py --transfer-matrix data/Tmatrix_cone_only.npy ...
+python validation/run_validation.py --eigendata-dir results_cone --validation-set total_field.npy
+
+# 4. (Optional) Interpolate eigenvectors to different mesh
 python run_interpolation.py config_interpolation.json
 ```
 
-### Diffuse Field Validation
+### Free-Field Convergence Study
 
 ```bash
-# Generate synthetic diffuse field and validate correlation
+# Study plane wave convergence in empty space
 python run_diffuse_field.py config.json
 ```
 
