@@ -1,0 +1,7 @@
+{
+    "coordinates_path": "data/coordinates.npy",
+    "transfer_matrix_path": "data/Tmatrix.npy",
+    "output_dir": "data",
+    "base_z": -0.1778,
+    "tolerance": 1e-6
+}

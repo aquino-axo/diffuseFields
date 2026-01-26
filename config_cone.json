@@ -1,7 +1,7 @@
 {
     "input": {
-        "transfer_matrix_path": "data/Tmatrix.npy",
-        "coordinates_path": "data/coordinates.npy",
+        "transfer_matrix_path": "data/Tmatrix_cone_only.npy",
+        "coordinates_path": "data/coordinates_cone_only.npy",
         "directions_path": "data/directions.npy"
     },
     "physics": {
