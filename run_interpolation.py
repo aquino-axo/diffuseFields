@@ -180,10 +180,14 @@ def save_results(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if output_cfg.get('save_fields', True):
+        # Derive output filename from input filename with _interpolated suffix
+        input_path = Path(config['input']['pressure_fields_path'])
+        output_filename = f"{input_path.stem}_interpolated{input_path.suffix}"
+
         if input_type == 'eigendata':
             # Save as .npz preserving eigendata format
             eigendata_metadata = data['eigendata_metadata']
-            fields_path = output_dir / 'interpolated_eigendata.npz'
+            fields_path = output_dir / output_filename
             np.savez(
                 fields_path,
                 frequency=eigendata_metadata['frequency'],
@@ -194,7 +198,7 @@ def save_results(
             print(f"Saved interpolated eigendata to: {fields_path}")
         else:
             # Save as regular .npy
-            fields_path = output_dir / 'interpolated_fields.npy'
+            fields_path = output_dir / output_filename
             np.save(fields_path, results['interpolated_fields'])
             print(f"Saved interpolated fields to: {fields_path}")
 
