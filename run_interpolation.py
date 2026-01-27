@@ -297,7 +297,8 @@ def generate_comparison_plots(
     # Save figure
     if vis_cfg.get('save_figures', True):
         fmt = vis_cfg.get('figure_format', 'png')
-        fig_path = output_dir / f'interpolation_comparison.{fmt}'
+        input_stem = Path(config['input']['pressure_fields_path']).stem
+        fig_path = output_dir / f'{input_stem}_interpolated.{fmt}'
         plt.savefig(fig_path, dpi=150, bbox_inches='tight')
         print(f"Saved comparison plot to: {fig_path}")
 
