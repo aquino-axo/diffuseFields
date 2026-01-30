@@ -1,0 +1,17 @@
+{
+    "input": {
+        "source_coordinates_path": "data/coordinates_cone_only.npy",
+        "pressure_field_path": "results_cone/eigendata_freq0.npz",
+        "input_type": "eigendata",
+        "exodus_file": "data/mug.e",
+        "sideset_id": 1
+    },
+    "interpolation": {
+        "kernel": "thin_plate_spline",
+        "smoothing": 0.0
+    },
+    "output": {
+        "variable_prefix": "pressure",
+        "time_step": 1
+    }
+}

@@ -57,3 +57,5 @@ A custom agent (`diffuse-acoustic-field-expert`) is available for theoretical qu
 -	Make the code clean and extensible.
 -	Create unit tests that are relevant to check correctness of the calculations.  Create a list of the tests first that I need to approve before proceeding.  
 -	Keep the tests to the absolute necessary ones. Avoid tests that are trivial.
+- When using an exodus database, you can refer to https://sandialabs.github.io/seacas-docs/sphinx/html/exodus.html
+- Use exodusii when using the SEACAS package
