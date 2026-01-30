@@ -1,13 +1,13 @@
 {
     "input": {
-        "source_coordinates_path": "data/coordinates_cone_only.npy",
-        "pressure_field_path": "results_cone/eigendata_freq0.npz",
-        "input_type": "eigendata",
-        "exodus_file": "data/mug.e",
-        "sideset_id": 1
+        "source_coordinates_path": "data/cube_coords.npy",
+        "pressure_field_path": "data/cube_p.npy",
+        "input_type": "pressure_field",
+        "exodus_file": "data/cube.e",
+        "sideset_id": 6
     },
     "interpolation": {
-        "kernel": "thin_plate_spline",
+        "kernel": "linear",
         "smoothing": 0.0
     },
     "output": {

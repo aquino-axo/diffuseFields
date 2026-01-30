@@ -92,10 +92,17 @@ class ExodusSideInterpolator:
         coords : ndarray, shape (n_nodes, 3)
         """
         if self._coords is None:
-            # Read coordinate array directly from the netCDF handle;
-            # the 'coord' variable has shape (n_dims, n_nodes).
-            coord = np.array(self._exo.fh.variables['coord'][:])
-            self._coords = coord.T  # transpose to (n_nodes, 3)
+            fh = self._exo.fh
+            if 'coord' in fh.variables:
+                # Single array with shape (n_dims, n_nodes)
+                coord = np.array(fh.variables['coord'][:])
+                self._coords = coord.T
+            else:
+                # Separate coordx, coordy, coordz arrays
+                x = np.array(fh.variables['coordx'][:])
+                y = np.array(fh.variables['coordy'][:])
+                z = np.array(fh.variables['coordz'][:])
+                self._coords = np.column_stack([x, y, z])
         return self._coords
 
     def get_sideset_face_centroids(self, sideset_id: int) -> np.ndarray:
@@ -214,7 +221,8 @@ class ExodusSideInterpolator:
                 list(padded), dtype='S1'
             )
 
-        # Create data variables for each (var_index, sideset) pair
+        # Create data variables for each (var_index, sideset) pair,
+        # initialized to zero (netCDF default fill value is 9.97e+36)
         time_dim = ex.DIM_TIME  # 'time_step'
         ss_ids = self._exo.get_side_set_ids()
         for ss_id in ss_ids:
@@ -223,7 +231,10 @@ class ExodusSideInterpolator:
             for vi in range(1, num_vars + 1):
                 key = ex.VAR_SIDE_SET_VAR(vi, ss_iid)
                 if key not in fh.variables:
-                    fh.createVariable(key, 'f8', (time_dim, side_dim))
+                    fh.createVariable(
+                        key, 'f8', (time_dim, side_dim),
+                        fill_value=0.0
+                    )
 
         self._sideset_var_names = all_names
 

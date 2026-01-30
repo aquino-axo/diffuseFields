@@ -77,7 +77,7 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
         config['interpolation'] = {}
 
     interp_cfg = config['interpolation']
-    interp_cfg.setdefault('kernel', 'thin_plate_spline')
+    interp_cfg.setdefault('kernel', 'linear')
     interp_cfg.setdefault('smoothing', 0.0)
 
     # Set defaults for output section
