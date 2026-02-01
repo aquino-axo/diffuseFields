@@ -111,6 +111,43 @@ class ExodusSideInterpolator:
                 self._coords = np.column_stack([x, y, z])
         return self._coords
 
+    def get_side_set_node_list(self, sideset_id: int) -> tuple:
+        """
+        Get the node list for all faces in a sideset.
+
+        Follows the SEACAS exodus API convention: returns the number of
+        nodes per side and a concatenated array of node indices.
+
+        Parameters
+        ----------
+        sideset_id : int
+            The sideset ID.
+
+        Returns
+        -------
+        num_nodes_per_side : ndarray of int
+            Number of corner nodes for each face.
+        side_nodes : ndarray of int
+            Concatenated 1-based node indices for all faces.
+        """
+        self._validate_sideset_id(sideset_id)
+        element_ids = self._exo.get_side_set_elems(sideset_id)
+        side_ids = self._exo.get_side_set_sides(sideset_id)
+
+        n_faces = len(element_ids)
+        num_nodes_per_side = np.empty(n_faces, dtype=int)
+        all_nodes = []
+
+        for i in range(n_faces):
+            face_nodes = self._get_face_global_nodes(
+                element_ids[i], side_ids[i]
+            )
+            num_nodes_per_side[i] = len(face_nodes)
+            all_nodes.append(face_nodes)
+
+        side_nodes = np.concatenate(all_nodes)
+        return num_nodes_per_side, side_nodes
+
     def get_sideset_face_centroids(self, sideset_id: int) -> np.ndarray:
         """
         Compute area-weighted centroids of all faces in a sideset.
@@ -124,21 +161,22 @@ class ExodusSideInterpolator:
         -------
         centroids : ndarray, shape (n_faces, 3)
         """
-        self._validate_sideset_id(sideset_id)
         coords = self.get_coords()
-        element_ids = self._exo.get_side_set_elems(sideset_id)
-        side_ids = self._exo.get_side_set_sides(sideset_id)
+        num_nodes_per_side, side_nodes = self.get_side_set_node_list(
+            sideset_id
+        )
 
-        n_faces = len(element_ids)
+        n_faces = len(num_nodes_per_side)
         centroids = np.empty((n_faces, 3))
 
+        offset = 0
         for i in range(n_faces):
-            global_node_ids = self._get_face_global_nodes(
-                element_ids[i], side_ids[i]
-            )
-            face_coords = coords[global_node_ids - 1]
+            n = num_nodes_per_side[i]
+            face_node_ids = side_nodes[offset:offset + n]
+            face_coords = coords[face_node_ids - 1]
             centroid, _ = self._compute_face_centroid_and_area(face_coords)
             centroids[i] = centroid
+            offset += n
 
         return centroids
 
@@ -155,21 +193,22 @@ class ExodusSideInterpolator:
         -------
         areas : ndarray, shape (n_faces,)
         """
-        self._validate_sideset_id(sideset_id)
         coords = self.get_coords()
-        element_ids = self._exo.get_side_set_elems(sideset_id)
-        side_ids = self._exo.get_side_set_sides(sideset_id)
+        num_nodes_per_side, side_nodes = self.get_side_set_node_list(
+            sideset_id
+        )
 
-        n_faces = len(element_ids)
+        n_faces = len(num_nodes_per_side)
         areas = np.empty(n_faces)
 
+        offset = 0
         for i in range(n_faces):
-            global_node_ids = self._get_face_global_nodes(
-                element_ids[i], side_ids[i]
-            )
-            face_coords = coords[global_node_ids - 1]
+            n = num_nodes_per_side[i]
+            face_node_ids = side_nodes[offset:offset + n]
+            face_coords = coords[face_node_ids - 1]
             _, area = self._compute_face_centroid_and_area(face_coords)
             areas[i] = area
+            offset += n
 
         return areas
 
@@ -333,8 +372,12 @@ class ExodusSideInterpolator:
             )
 
     def _build_element_block_map(self) -> None:
-        """Build mapping from global element ID to (block_id, local_index)."""
-        elem_id_map = self._exo.get_element_id_map()
+        """Build mapping from internal element index to (block_id, local_index).
+
+        The sideset element arrays (``elem_ssN``) store internal 1-based
+        element indices, not user-defined element IDs from ``elem_num_map``.
+        This map is keyed by internal index so lookups are consistent.
+        """
         block_ids = self._exo.get_element_block_ids()
 
         self._elem_block_map = {}
@@ -346,33 +389,33 @@ class ExodusSideInterpolator:
             self._block_elem_type[block_id] = elem_type.upper().strip()
 
             for local_idx in range(num_elems):
-                global_id = elem_id_map[global_offset + local_idx]
-                self._elem_block_map[global_id] = (block_id, local_idx)
+                internal_index = global_offset + local_idx + 1  # 1-based
+                self._elem_block_map[internal_index] = (block_id, local_idx)
 
             global_offset += num_elems
 
     def _get_face_global_nodes(
-        self, element_id: int, side_id: int
+        self, element_index: int, side_id: int
     ) -> np.ndarray:
         """
-        Get global node IDs for a face of an element.
+        Get node indices for a face of an element.
 
         Parameters
         ----------
-        element_id : int
-            Global element ID (1-based).
+        element_index : int
+            Internal element index (1-based), as stored in sideset arrays.
         side_id : int
             Side number (1-based).
 
         Returns
         -------
-        node_ids : ndarray
-            Global node IDs (1-based) of the face vertices.
+        node_indices : ndarray
+            Internal 1-based node indices for the face vertices.
         """
         if self._elem_block_map is None:
             self._build_element_block_map()
 
-        block_id, local_idx = self._elem_block_map[element_id]
+        block_id, local_idx = self._elem_block_map[element_index]
 
         if block_id not in self._block_connectivity:
             conn = self._exo.get_element_conn(block_id)
