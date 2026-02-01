@@ -185,11 +185,14 @@ def run_sideset_interpolation(config: Dict[str, Any]) -> None:
             for i in range(n_fields):
                 var_names.append(f"{prefix}_ev{i+1}_real")
                 var_names.append(f"{prefix}_ev{i+1}_imag")
+                var_names.append(f"{prefix}_ev{i+1}_mag")
         else:
             # Single pressure field
             if interpolated.ndim == 2:
                 interpolated = interpolated.squeeze()
-            var_names = [f"{prefix}_real", f"{prefix}_imag"]
+            var_names = [
+                f"{prefix}_real", f"{prefix}_imag", f"{prefix}_mag"
+            ]
 
         db.prepare_sideset_variables(var_names)
 
@@ -201,21 +204,29 @@ def run_sideset_interpolation(config: Dict[str, Any]) -> None:
             for i in range(n_fields):
                 real_name = f"{prefix}_ev{i+1}_real"
                 imag_name = f"{prefix}_ev{i+1}_imag"
+                mag_name = f"{prefix}_ev{i+1}_mag"
 
+                field = interpolated[:, i]
                 db.write_sideset_variable(
                     sideset_id, real_name,
-                    np.real(interpolated[:, i]), step=step
+                    np.real(field), step=step
                 )
                 db.write_sideset_variable(
                     sideset_id, imag_name,
-                    np.imag(interpolated[:, i]), step=step
+                    np.imag(field), step=step
                 )
-                print(f"  Wrote {real_name}, {imag_name}")
+                db.write_sideset_variable(
+                    sideset_id, mag_name,
+                    np.abs(field), step=step
+                )
+                print(f"  Wrote {real_name}, {imag_name}, {mag_name}")
         else:
             real_name = f"{prefix}_real"
             imag_name = f"{prefix}_imag"
+            mag_name = f"{prefix}_mag"
 
-            print(f"\nWriting sideset variables: {real_name}, {imag_name}")
+            print(f"\nWriting sideset variables: "
+                  f"{real_name}, {imag_name}, {mag_name}")
             db.write_sideset_variable(
                 sideset_id, real_name,
                 np.real(interpolated), step=step
@@ -223,6 +234,10 @@ def run_sideset_interpolation(config: Dict[str, Any]) -> None:
             db.write_sideset_variable(
                 sideset_id, imag_name,
                 np.imag(interpolated), step=step
+            )
+            db.write_sideset_variable(
+                sideset_id, mag_name,
+                np.abs(interpolated), step=step
             )
 
     print(f"\nSideset variables written to: {exodus_file}")
