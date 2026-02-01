@@ -392,7 +392,7 @@ def generate_plots(
         else:
             plt.show()
 
-        # Plot eigenvectors
+        # Plot eigenvectors (real, imaginary, and magnitude)
         if output_config['plot_eigenvectors']:
             n_plot = min(
                 output_config['n_vectors_to_plot'],
@@ -405,20 +405,23 @@ def generate_plots(
                 for i in range(n_plot)
             ]
 
-            fig = visualizer.plot_multiple_fields(
-                eigenvectors[:, :n_plot],
-                labels=labels,
-                component=output_config['plot_component']
-            )
-
-            if output_config['save_figures']:
-                fig.savefig(
-                    output_dir / f'eigenvectors_freq{freq_idx}.{fig_format}',
-                    dpi=150, bbox_inches='tight'
+            for comp, suffix in [('real', '_real'),
+                                 ('imag', '_imag'),
+                                 ('magnitude', '_mag')]:
+                fig = visualizer.plot_multiple_fields(
+                    eigenvectors[:, :n_plot],
+                    labels=labels,
+                    component=comp
                 )
-                plt.close(fig)
-            else:
-                plt.show()
+
+                if output_config['save_figures']:
+                    fig.savefig(
+                        output_dir / f'eigenvectors_freq{freq_idx}{suffix}.{fig_format}',
+                        dpi=150, bbox_inches='tight'
+                    )
+                    plt.close(fig)
+                else:
+                    plt.show()
 
     print(f"Plots saved to {output_dir}")
 
