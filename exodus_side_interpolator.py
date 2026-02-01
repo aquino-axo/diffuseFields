@@ -247,9 +247,20 @@ class ExodusSideInterpolator:
 
         num_vars = len(all_names)
 
-        # Create the num_sset_var dimension with the total count
+        # Create or validate the num_sset_var dimension.
+        # netCDF3 dimensions are fixed at creation time and cannot be resized.
         dim_name = ex.DIM_NUM_SIDE_SET_VAR  # 'num_sset_var'
-        if dim_name not in fh.dimensions:
+        if dim_name in fh.dimensions:
+            existing_size = fh.dimensions[dim_name].size
+            if existing_size < num_vars:
+                raise RuntimeError(
+                    f"Cannot add {num_vars} sideset variables: the exodus "
+                    f"file already has a fixed dimension '{dim_name}' of "
+                    f"size {existing_size}. Start from a fresh copy of the "
+                    f"exodus file, or ensure all variable names are "
+                    f"registered in a single call to prepare_sideset_variables()."
+                )
+        else:
             fh.createDimension(dim_name, num_vars)
 
         # Create the variable name array
