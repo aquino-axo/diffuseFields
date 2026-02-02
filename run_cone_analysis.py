@@ -288,32 +288,8 @@ def run_analysis(config: Dict[str, Any]) -> Dict[str, Any]:
         'n_components_kept': {}
     }
 
-    # Compute eigenvalues for each frequency
-    for freq_idx in freq_indices:
-        freq = frequencies[freq_idx]
-        print(f"\nProcessing frequency {freq:.1f} Hz (index {freq_idx})...")
-
-        eigenvalues, eigenvectors = cone.compute_covariance_eigenvalues(
-            freq_idx=freq_idx,
-            var_ratio=eig_config['var_ratio'],
-            n_components=eig_config['n_components'],
-            solver=eig_config['solver'],
-            n_oversamples=eig_config['n_oversamples'],
-            n_power_iter=eig_config['n_power_iter']
-        )
-
-        _, cumulative = cone.get_variance_explained()
-
-        results['eigenvalues'][freq_idx] = eigenvalues
-        results['eigenvectors'][freq_idx] = eigenvectors
-        results['variance_explained'][freq_idx] = cumulative
-        results['n_components_kept'][freq_idx] = cone._n_components_kept
-
-        print(f"  Computed {len(eigenvalues)} eigenvalues, kept {cone._n_components_kept} eigenvectors")
-        print(f"  Variance captured by kept components: {cumulative[cone._n_components_kept - 1]:.4f}")
-
-    # All-frequencies SVD
     if eig_config.get('all_freqs_svd', False):
+        # All-frequencies SVD: single decomposition using all frequency snapshots
         print("\nComputing all-frequencies SVD...")
         eigenvalues, eigenvectors = cone.compute_covariance_eigenvalues_all_freqs(
             freq_indices=freq_indices,
@@ -329,6 +305,30 @@ def run_analysis(config: Dict[str, Any]) -> Dict[str, Any]:
 
         print(f"  All-freqs: {len(eigenvalues)} eigenvalues, kept {cone._n_components_kept} eigenvectors")
         print(f"  Variance captured: {cumulative[cone._n_components_kept - 1]:.4f}")
+    else:
+        # Per-frequency SVD: separate decomposition for each frequency
+        for freq_idx in freq_indices:
+            freq = frequencies[freq_idx]
+            print(f"\nProcessing frequency {freq:.1f} Hz (index {freq_idx})...")
+
+            eigenvalues, eigenvectors = cone.compute_covariance_eigenvalues(
+                freq_idx=freq_idx,
+                var_ratio=eig_config['var_ratio'],
+                n_components=eig_config['n_components'],
+                solver=eig_config['solver'],
+                n_oversamples=eig_config['n_oversamples'],
+                n_power_iter=eig_config['n_power_iter']
+            )
+
+            _, cumulative = cone.get_variance_explained()
+
+            results['eigenvalues'][freq_idx] = eigenvalues
+            results['eigenvectors'][freq_idx] = eigenvectors
+            results['variance_explained'][freq_idx] = cumulative
+            results['n_components_kept'][freq_idx] = cone._n_components_kept
+
+            print(f"  Computed {len(eigenvalues)} eigenvalues, kept {cone._n_components_kept} eigenvectors")
+            print(f"  Variance captured by kept components: {cumulative[cone._n_components_kept - 1]:.4f}")
 
     return results, cone
 
@@ -343,22 +343,9 @@ def save_results(
     output_dir = Path(output_config['output_dir'])
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save eigenvalues and eigenvectors
     if output_config['save_eigenvectors']:
-        for freq_idx in results['freq_indices']:
-            freq = results['frequencies'][freq_idx]
-            np.savez(
-                output_dir / f'eigendata_freq{freq_idx}.npz',
-                frequency=freq,
-                eigenvalues=results['eigenvalues'][freq_idx],
-                eigenvectors=results['eigenvectors'][freq_idx],
-                variance_explained=results['variance_explained'][freq_idx]
-            )
-        print(f"Saved eigenvalue data to {output_dir}")
-
-    # Save all-frequencies eigendata if computed
-    if 'all_freqs' in results['eigenvalues']:
-        if output_config['save_eigenvectors']:
+        if 'all_freqs' in results['eigenvalues']:
+            # All-frequencies mode
             np.savez(
                 output_dir / 'eigendata_all_freqs.npz',
                 frequencies=np.array([float(results['frequencies'][i]) for i in results['freq_indices']]),
@@ -367,28 +354,39 @@ def save_results(
                 variance_explained=results['variance_explained']['all_freqs']
             )
             print(f"Saved all-frequencies eigendata to {output_dir}")
+        else:
+            # Per-frequency mode
+            for freq_idx in results['freq_indices']:
+                freq = results['frequencies'][freq_idx]
+                np.savez(
+                    output_dir / f'eigendata_freq{freq_idx}.npz',
+                    frequency=freq,
+                    eigenvalues=results['eigenvalues'][freq_idx],
+                    eigenvectors=results['eigenvectors'][freq_idx],
+                    variance_explained=results['variance_explained'][freq_idx]
+                )
+            print(f"Saved eigenvalue data to {output_dir}")
 
     # Save summary JSON
     summary = {
         'freq_indices': results['freq_indices'],
         'frequencies': [float(results['frequencies'][i]) for i in results['freq_indices']],
-        'n_eigenvalues': {
-            str(k): len(v) for k, v in results['eigenvalues'].items()
-            if k != 'all_freqs'
-        },
-        'variance_captured': {
-            str(k): float(v[-1]) for k, v in results['variance_explained'].items()
-            if k != 'all_freqs'
-        }
     }
 
     if 'all_freqs' in results['eigenvalues']:
         summary['all_freqs'] = {
             'n_eigenvalues': len(results['eigenvalues']['all_freqs']),
-            'n_components_kept': results['n_components_kept']['all_freqs'],
+            'n_components_kept': int(results['n_components_kept']['all_freqs']),
             'variance_captured': float(results['variance_explained']['all_freqs'][-1]),
             'freq_indices_used': results['freq_indices'],
             'frequencies_used': [float(results['frequencies'][i]) for i in results['freq_indices']]
+        }
+    else:
+        summary['n_eigenvalues'] = {
+            str(k): len(v) for k, v in results['eigenvalues'].items()
+        }
+        summary['variance_captured'] = {
+            str(k): float(v[-1]) for k, v in results['variance_explained'].items()
         }
 
     with open(output_dir / 'summary.json', 'w') as f:
@@ -410,63 +408,8 @@ def generate_plots(
     # Create visualizer from cone
     visualizer = ConeVisualizer(cone.coordinates, cone.cone_geometry)
 
-    for freq_idx in results['freq_indices']:
-        freq = results['frequencies'][freq_idx]
-        eigenvalues = results['eigenvalues'][freq_idx]
-        eigenvectors = results['eigenvectors'][freq_idx]
-        n_kept = results['n_components_kept'][freq_idx]
-
-        # Plot variance explained
-        fig, ax = plt.subplots(figsize=(10, 6))
-        visualizer.plot_variance_explained(
-            eigenvalues,
-            ax=ax,
-            title=f'Variance Explained (f = {freq:.1f} Hz)',
-            n_components_kept=n_kept
-        )
-
-        if output_config['save_figures']:
-            fig.savefig(
-                output_dir / f'variance_explained_freq{freq_idx}.{fig_format}',
-                dpi=150, bbox_inches='tight'
-            )
-            plt.close(fig)
-        else:
-            plt.show()
-
-        # Plot eigenvectors (real, imaginary, and magnitude)
-        if output_config['plot_eigenvectors']:
-            n_plot = min(
-                output_config['n_vectors_to_plot'],
-                eigenvectors.shape[1]
-            )
-
-            # Create labels with eigenvalue info
-            labels = [
-                f'Eigenvector {i + 1} (λ = {eigenvalues[i]:.2e})'
-                for i in range(n_plot)
-            ]
-
-            for comp, suffix in [('real', '_real'),
-                                 ('imag', '_imag'),
-                                 ('magnitude', '_mag')]:
-                fig = visualizer.plot_multiple_fields(
-                    eigenvectors[:, :n_plot],
-                    labels=labels,
-                    component=comp
-                )
-
-                if output_config['save_figures']:
-                    fig.savefig(
-                        output_dir / f'eigenvectors_freq{freq_idx}{suffix}.{fig_format}',
-                        dpi=150, bbox_inches='tight'
-                    )
-                    plt.close(fig)
-                else:
-                    plt.show()
-
-    # Plot all-frequencies results if available
     if 'all_freqs' in results['eigenvalues']:
+        # All-frequencies mode
         eigenvalues = results['eigenvalues']['all_freqs']
         eigenvectors = results['eigenvectors']['all_freqs']
         n_kept = results['n_components_kept']['all_freqs']
@@ -522,6 +465,61 @@ def generate_plots(
                     plt.close(fig)
                 else:
                     plt.show()
+    else:
+        # Per-frequency mode
+        for freq_idx in results['freq_indices']:
+            freq = results['frequencies'][freq_idx]
+            eigenvalues = results['eigenvalues'][freq_idx]
+            eigenvectors = results['eigenvectors'][freq_idx]
+            n_kept = results['n_components_kept'][freq_idx]
+
+            # Plot variance explained
+            fig, ax = plt.subplots(figsize=(10, 6))
+            visualizer.plot_variance_explained(
+                eigenvalues,
+                ax=ax,
+                title=f'Variance Explained (f = {freq:.1f} Hz)',
+                n_components_kept=n_kept
+            )
+
+            if output_config['save_figures']:
+                fig.savefig(
+                    output_dir / f'variance_explained_freq{freq_idx}.{fig_format}',
+                    dpi=150, bbox_inches='tight'
+                )
+                plt.close(fig)
+            else:
+                plt.show()
+
+            # Plot eigenvectors (real, imaginary, and magnitude)
+            if output_config['plot_eigenvectors']:
+                n_plot = min(
+                    output_config['n_vectors_to_plot'],
+                    eigenvectors.shape[1]
+                )
+
+                labels = [
+                    f'Eigenvector {i + 1} (\u03bb = {eigenvalues[i]:.2e})'
+                    for i in range(n_plot)
+                ]
+
+                for comp, suffix in [('real', '_real'),
+                                     ('imag', '_imag'),
+                                     ('magnitude', '_mag')]:
+                    fig = visualizer.plot_multiple_fields(
+                        eigenvectors[:, :n_plot],
+                        labels=labels,
+                        component=comp
+                    )
+
+                    if output_config['save_figures']:
+                        fig.savefig(
+                            output_dir / f'eigenvectors_freq{freq_idx}{suffix}.{fig_format}',
+                            dpi=150, bbox_inches='tight'
+                        )
+                        plt.close(fig)
+                    else:
+                        plt.show()
 
     print(f"Plots saved to {output_dir}")
 

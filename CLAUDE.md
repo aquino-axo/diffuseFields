@@ -47,7 +47,7 @@ No build step or package manager required. Dependencies: NumPy, SciPy, Matplotli
 - `var_ratio`: variance ratio for truncation (default 0.99)
 - `n_components`: fixed number of eigenvectors (overrides `var_ratio` if set)
 - `solver`: `"direct"` (SVD of H) or `"randomized"` (matrix-free)
-- `all_freqs_svd`: when `true`, performs an additional SVD using all frequency snapshots stacked together, producing `eigendata_all_freqs.npz` and corresponding plots
+- `all_freqs_svd`: when `true`, performs SVD using all frequency snapshots stacked together instead of per-frequency, producing `eigendata_all_freqs.npz` and corresponding plots
 
 **cone_visualizer.py** - `ConeVisualizer` class for 3D plots of pressure fields and eigenvalue decay on cone surfaces.
 

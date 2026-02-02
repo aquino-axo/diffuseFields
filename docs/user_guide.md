@@ -155,7 +155,7 @@ python run_cone_analysis.py config_cone_range.json
 | `n_components` | Fixed number of eigenvectors (overrides var_ratio if set) |
 | `solver` | `"direct"` for full eigendecomposition, `"randomized"` for large problems |
 | `freq_indices` | List of frequency indices to process (null = all) |
-| `all_freqs_svd` | When `true`, performs an additional SVD using all frequency snapshots stacked together (default: `false`) |
+| `all_freqs_svd` | When `true`, performs SVD using all frequency snapshots stacked together instead of per-frequency (default: `false`) |
 
 #### Output Section
 | Parameter | Description |
