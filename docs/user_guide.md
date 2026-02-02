@@ -117,7 +117,8 @@ python run_cone_analysis.py config_cone_range.json
         "var_ratio": 0.999,
         "n_components": null,
         "solver": "direct",
-        "freq_indices": null
+        "freq_indices": null,
+        "all_freqs_svd": true
     },
     "output": {
         "output_dir": "results_cone",
@@ -154,6 +155,7 @@ python run_cone_analysis.py config_cone_range.json
 | `n_components` | Fixed number of eigenvectors (overrides var_ratio if set) |
 | `solver` | `"direct"` for full eigendecomposition, `"randomized"` for large problems |
 | `freq_indices` | List of frequency indices to process (null = all) |
+| `all_freqs_svd` | When `true`, performs an additional SVD using all frequency snapshots stacked together (default: `false`) |
 
 #### Output Section
 | Parameter | Description |
@@ -170,19 +172,31 @@ python run_cone_analysis.py config_cone_range.json
 
 ```
 results_cone/
-├── eigendata_freq0.npz      # Eigendata for frequency 0 (300 Hz)
-├── eigendata_freq1.npz      # Eigendata for frequency 1 (400 Hz)
+├── eigendata_freq0.npz              # Eigendata for frequency 0 (300 Hz)
+├── eigendata_freq1.npz              # Eigendata for frequency 1 (400 Hz)
 ├── ...
-├── eigenvalues_summary.json # Summary statistics
-├── n_components_vs_freq.png # Components needed vs frequency
-├── variance_explained_*.png # Variance plots per frequency
-└── eigenvectors_*.png       # Eigenvector visualizations
+├── eigendata_all_freqs.npz          # Eigendata from all-frequencies SVD (if enabled)
+├── summary.json                     # Summary statistics
+├── variance_explained_freq*.png     # Variance plots per frequency
+├── variance_explained_all_freqs.png # Variance plot for all-frequencies SVD
+├── eigenvectors_freq*_real.png      # Eigenvector visualizations per frequency
+├── eigenvectors_freq*_imag.png
+├── eigenvectors_freq*_mag.png
+├── eigenvectors_all_freqs_real.png  # Eigenvector visualizations for all-frequencies SVD
+├── eigenvectors_all_freqs_imag.png
+└── eigenvectors_all_freqs_mag.png
 ```
 
-Each `.npz` file contains:
+Each per-frequency `.npz` file contains:
 - `frequency`: Frequency in Hz
 - `eigenvalues`: All computed eigenvalues
 - `eigenvectors`: Retained eigenvectors (ndof × n_kept)
+- `variance_explained`: Cumulative variance ratio
+
+The `eigendata_all_freqs.npz` file (when `all_freqs_svd` is enabled) contains:
+- `frequencies`: Array of all frequencies used in the analysis
+- `eigenvalues`: All eigenvalues from the stacked SVD
+- `eigenvectors`: Retained eigenvectors capturing dominant modes across all frequencies
 - `variance_explained`: Cumulative variance ratio
 
 ## 3. Pressure Field Interpolation

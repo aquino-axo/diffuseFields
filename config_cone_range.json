@@ -21,7 +21,8 @@
         "var_ratio": 0.999,
         "n_components": null,
         "solver": "direct",
-        "freq_indices": null
+        "freq_indices": null,
+        "all_freqs_svd": true
     },
     "output": {
         "output_dir": "results_cone",

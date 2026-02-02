@@ -132,7 +132,8 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
             'solver': 'direct',  # 'direct' or 'randomized'
             'n_oversamples': 10,
             'n_power_iter': 2,
-            'freq_indices': None  # None means all frequencies
+            'freq_indices': None,  # None means all frequencies
+            'all_freqs_svd': False
         },
         'output': {
             'output_dir': 'results_cone',
@@ -311,6 +312,24 @@ def run_analysis(config: Dict[str, Any]) -> Dict[str, Any]:
         print(f"  Computed {len(eigenvalues)} eigenvalues, kept {cone._n_components_kept} eigenvectors")
         print(f"  Variance captured by kept components: {cumulative[cone._n_components_kept - 1]:.4f}")
 
+    # All-frequencies SVD
+    if eig_config.get('all_freqs_svd', False):
+        print("\nComputing all-frequencies SVD...")
+        eigenvalues, eigenvectors = cone.compute_covariance_eigenvalues_all_freqs(
+            freq_indices=freq_indices,
+            var_ratio=eig_config['var_ratio'],
+            n_components=eig_config['n_components'],
+        )
+        _, cumulative = cone.get_variance_explained()
+
+        results['eigenvalues']['all_freqs'] = eigenvalues
+        results['eigenvectors']['all_freqs'] = eigenvectors
+        results['variance_explained']['all_freqs'] = cumulative
+        results['n_components_kept']['all_freqs'] = cone._n_components_kept
+
+        print(f"  All-freqs: {len(eigenvalues)} eigenvalues, kept {cone._n_components_kept} eigenvectors")
+        print(f"  Variance captured: {cumulative[cone._n_components_kept - 1]:.4f}")
+
     return results, cone
 
 
@@ -337,17 +356,40 @@ def save_results(
             )
         print(f"Saved eigenvalue data to {output_dir}")
 
+    # Save all-frequencies eigendata if computed
+    if 'all_freqs' in results['eigenvalues']:
+        if output_config['save_eigenvectors']:
+            np.savez(
+                output_dir / 'eigendata_all_freqs.npz',
+                frequencies=np.array([float(results['frequencies'][i]) for i in results['freq_indices']]),
+                eigenvalues=results['eigenvalues']['all_freqs'],
+                eigenvectors=results['eigenvectors']['all_freqs'],
+                variance_explained=results['variance_explained']['all_freqs']
+            )
+            print(f"Saved all-frequencies eigendata to {output_dir}")
+
     # Save summary JSON
     summary = {
         'freq_indices': results['freq_indices'],
         'frequencies': [float(results['frequencies'][i]) for i in results['freq_indices']],
         'n_eigenvalues': {
             str(k): len(v) for k, v in results['eigenvalues'].items()
+            if k != 'all_freqs'
         },
         'variance_captured': {
             str(k): float(v[-1]) for k, v in results['variance_explained'].items()
+            if k != 'all_freqs'
         }
     }
+
+    if 'all_freqs' in results['eigenvalues']:
+        summary['all_freqs'] = {
+            'n_eigenvalues': len(results['eigenvalues']['all_freqs']),
+            'n_components_kept': results['n_components_kept']['all_freqs'],
+            'variance_captured': float(results['variance_explained']['all_freqs'][-1]),
+            'freq_indices_used': results['freq_indices'],
+            'frequencies_used': [float(results['frequencies'][i]) for i in results['freq_indices']]
+        }
 
     with open(output_dir / 'summary.json', 'w') as f:
         json.dump(summary, f, indent=2)
@@ -417,6 +459,64 @@ def generate_plots(
                 if output_config['save_figures']:
                     fig.savefig(
                         output_dir / f'eigenvectors_freq{freq_idx}{suffix}.{fig_format}',
+                        dpi=150, bbox_inches='tight'
+                    )
+                    plt.close(fig)
+                else:
+                    plt.show()
+
+    # Plot all-frequencies results if available
+    if 'all_freqs' in results['eigenvalues']:
+        eigenvalues = results['eigenvalues']['all_freqs']
+        eigenvectors = results['eigenvectors']['all_freqs']
+        n_kept = results['n_components_kept']['all_freqs']
+
+        # Determine frequency range label
+        freqs_used = [results['frequencies'][i] for i in results['freq_indices']]
+        freq_range = f"{freqs_used[0]:.0f}-{freqs_used[-1]:.0f}"
+
+        # Variance explained plot
+        fig, ax = plt.subplots(figsize=(10, 6))
+        visualizer.plot_variance_explained(
+            eigenvalues,
+            ax=ax,
+            title=f'Variance Explained (All Frequencies: {freq_range} Hz)',
+            n_components_kept=n_kept
+        )
+
+        if output_config['save_figures']:
+            fig.savefig(
+                output_dir / f'variance_explained_all_freqs.{fig_format}',
+                dpi=150, bbox_inches='tight'
+            )
+            plt.close(fig)
+        else:
+            plt.show()
+
+        # Eigenvector plots
+        if output_config['plot_eigenvectors']:
+            n_plot = min(
+                output_config['n_vectors_to_plot'],
+                eigenvectors.shape[1]
+            )
+
+            labels = [
+                f'Mode {i + 1} (\u03bb = {eigenvalues[i]:.2e})'
+                for i in range(n_plot)
+            ]
+
+            for comp, suffix in [('real', '_real'),
+                                 ('imag', '_imag'),
+                                 ('magnitude', '_mag')]:
+                fig = visualizer.plot_multiple_fields(
+                    eigenvectors[:, :n_plot],
+                    labels=labels,
+                    component=comp
+                )
+
+                if output_config['save_figures']:
+                    fig.savefig(
+                        output_dir / f'eigenvectors_all_freqs{suffix}.{fig_format}',
                         dpi=150, bbox_inches='tight'
                     )
                     plt.close(fig)

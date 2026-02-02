@@ -32,6 +32,25 @@ No build step or package manager required. Dependencies: NumPy, SciPy, Matplotli
 
 **config.json** - Simulation parameters including frequency range, physics constants (speed of sound), simulation settings (number of waves/realizations), and output options.
 
+**cone_diffuse_field.py** - `ConeDiffuseField` class for cone surface CPSD analysis:
+- Total field covariance: `C = Po² * H @ H^H` where `H = D + T` (incident + scattered)
+- Per-frequency eigenanalysis via SVD of `H` (ndof × npws)
+- All-frequencies eigenanalysis via SVD of stacked `H_all = [H_0 | ... | H_{nf-1}]` (ndof × npws·nf), capturing dominant spatial modes across all frequencies simultaneously
+
+**run_cone_analysis.py** - Driver for cone analysis:
+- Loads transfer matrix, coordinates, and directions from `.npy` files
+- Computes per-frequency and optionally all-frequencies eigenanalysis
+- Saves eigendata as `.npz` files and summary as JSON
+- Generates variance explained and eigenvector plots
+
+**config_cone.json / config_cone_range.json** - Cone analysis configuration. Key eigenvalue settings:
+- `var_ratio`: variance ratio for truncation (default 0.99)
+- `n_components`: fixed number of eigenvectors (overrides `var_ratio` if set)
+- `solver`: `"direct"` (SVD of H) or `"randomized"` (matrix-free)
+- `all_freqs_svd`: when `true`, performs an additional SVD using all frequency snapshots stacked together, producing `eigendata_all_freqs.npz` and corresponding plots
+
+**cone_visualizer.py** - `ConeVisualizer` class for 3D plots of pressure fields and eigenvalue decay on cone surfaces.
+
 ## Key Physics
 
 The diffuse field is modeled as superposition of N plane waves:

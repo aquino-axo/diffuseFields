@@ -369,6 +369,67 @@ def test_wavenumber_computation():
     print("  PASSED")
 
 
+def test_all_freqs_eigenvalue_accuracy():
+    """
+    Test 9: Verify all-frequencies SVD eigenvalues match explicit covariance.
+
+    C_all = Po^2 * H_all @ H_all^H where H_all = [H_0 | H_1 | ... | H_{nf-1}]
+    """
+    print("Test 9: All-frequencies eigenvalue accuracy...")
+
+    ndof, npws, nfreqs = 25, 40, 3
+    T, coords, directions, frequencies, cone_geom = create_test_cone_data(ndof, npws, nfreqs)
+
+    Po = 1.0
+    c = 343.0
+    cone = ConeDiffuseField(T, coords, directions, frequencies, c, Po, cone_geom)
+
+    # Explicit: stack H matrices, form covariance, eigendecompose
+    H_all = np.hstack([cone._compute_total_field_matrix(i) for i in range(nfreqs)])
+    C_all = Po**2 * H_all @ H_all.conj().T
+    C_all = (C_all + C_all.conj().T) / 2  # Ensure Hermitian
+    eigvals_exact, _ = np.linalg.eigh(C_all)
+    eigvals_exact = eigvals_exact[::-1]  # Descending order
+
+    # Method under test
+    eigenvalues, eigenvectors = cone.compute_covariance_eigenvalues_all_freqs(
+        var_ratio=0.99
+    )
+
+    np.testing.assert_allclose(
+        eigenvalues, eigvals_exact[:len(eigenvalues)],
+        rtol=1e-10,
+        err_msg="All-frequencies eigenvalues differ from exact"
+    )
+
+    print("  PASSED")
+
+
+def test_all_freqs_eigenvector_orthonormality():
+    """
+    Test 10: Verify eigenvectors from all-frequencies SVD are orthonormal.
+    """
+    print("Test 10: All-frequencies eigenvector orthonormality...")
+
+    ndof, npws, nfreqs = 40, 60, 3
+    T, coords, directions, frequencies, cone_geom = create_test_cone_data(ndof, npws, nfreqs)
+
+    cone = ConeDiffuseField(T, coords, directions, frequencies, 343.0, 1.0, cone_geom)
+
+    _, eigenvectors = cone.compute_covariance_eigenvalues_all_freqs(
+        n_components=15
+    )
+
+    gram = eigenvectors.conj().T @ eigenvectors
+
+    np.testing.assert_allclose(
+        gram, np.eye(15), atol=1e-10,
+        err_msg="All-frequencies eigenvectors are not orthonormal"
+    )
+
+    print("  PASSED")
+
+
 def run_all_tests():
     """Run all tests."""
     print("=" * 60)
@@ -384,6 +445,8 @@ def run_all_tests():
         test_input_validation,
         test_randomized_eigensolver,
         test_wavenumber_computation,
+        test_all_freqs_eigenvalue_accuracy,
+        test_all_freqs_eigenvector_orthonormality,
     ]
 
     passed = 0

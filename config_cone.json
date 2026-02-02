@@ -19,7 +19,8 @@
         "solver": "direct",
         "n_oversamples": 10,
         "n_power_iter": 2,
-        "freq_indices": null
+        "freq_indices": null,
+        "all_freqs_svd": true
     },
     "output": {
         "output_dir": "results_cone",

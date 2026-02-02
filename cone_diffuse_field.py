@@ -302,6 +302,81 @@ class ConeDiffuseField:
 
         return eigenvalues, eigenvectors
 
+    def compute_covariance_eigenvalues_all_freqs(
+        self,
+        freq_indices: Optional[list] = None,
+        var_ratio: float = 0.99,
+        n_components: Optional[int] = None,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Compute eigenvalues of the covariance using all frequencies as snapshots.
+
+        Builds the stacked total field matrix H_all = [H_0 | H_1 | ... | H_{nf-1}]
+        of shape (ndof, npws * nf), then computes SVD. The covariance is:
+            C_all = Po^2 * H_all @ H_all^H
+
+        This captures the dominant spatial modes across all frequencies simultaneously.
+
+        Parameters
+        ----------
+        freq_indices : list of int, optional
+            Which frequency indices to include. If None, uses all frequencies.
+        var_ratio : float, optional
+            Minimum variance ratio to capture (0 < var_ratio <= 1), default 0.99.
+            Used to determine number of eigenvectors to retain.
+        n_components : int, optional
+            Number of eigenvectors to return. If provided, overrides var_ratio.
+
+        Returns
+        -------
+        eigenvalues : ndarray
+            All eigenvalues in descending order, length min(ndof, npws * nf).
+        eigenvectors : ndarray
+            Retained eigenvectors as columns, shape (ndof, n_kept).
+        """
+        if not 0 < var_ratio <= 1:
+            raise ValueError(f"var_ratio must be in (0, 1], got {var_ratio}")
+
+        if freq_indices is None:
+            freq_indices = list(range(self.nfreqs))
+
+        for idx in freq_indices:
+            if not 0 <= idx < self.nfreqs:
+                raise ValueError(
+                    f"freq_idx must be in [0, {self.nfreqs}), got {idx}"
+                )
+
+        # Stack total field matrices across all frequencies
+        H_blocks = [self._compute_total_field_matrix(i) for i in freq_indices]
+        H_all = np.hstack(H_blocks)  # (ndof, npws * nf)
+
+        Po_squared = self.amplitude ** 2
+
+        # SVD: H_all = U @ S @ V^H
+        U, singular_values, _ = np.linalg.svd(H_all, full_matrices=False)
+
+        # Eigenvalues of C_all = Po^2 * H_all @ H_all^H are Po^2 * sigma^2
+        eigenvalues = Po_squared * singular_values ** 2
+
+        eigenvectors = U
+
+        # Determine number of eigenvectors to keep
+        if n_components is not None:
+            n_keep = min(n_components, len(eigenvalues))
+        else:
+            cumulative = np.cumsum(eigenvalues) / np.sum(eigenvalues)
+            n_keep = np.searchsorted(cumulative, var_ratio) + 1
+            n_keep = min(n_keep, len(eigenvalues))
+
+        self._n_components_kept = n_keep
+
+        # Store results
+        self.eigenvalues = eigenvalues
+        self.eigenvectors = eigenvectors[:, :n_keep]
+        self._current_freq_idx = None  # Signals multi-frequency result
+
+        return eigenvalues, eigenvectors[:, :n_keep]
+
     def _compute_eigenvalues_direct(
         self,
         freq_idx: int,
