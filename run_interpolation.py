@@ -116,13 +116,24 @@ def load_input_data(config: Dict[str, Any]) -> Dict[str, Any]:
         # Load eigenvector data from .npz file
         data = np.load(input_cfg['pressure_fields_path'])
         pressure_fields = data['eigenvectors']
+
+        # Handle both per-frequency ('frequency' scalar) and
+        # all-frequencies ('frequencies' array) eigendata formats
+        if 'frequency' in data:
+            freq_info = float(data['frequency'])
+            freq_label = f"{freq_info:.1f} Hz"
+        else:
+            freqs = data['frequencies']
+            freq_info = freqs.tolist()
+            freq_label = f"{freqs[0]:.0f}-{freqs[-1]:.0f} Hz ({len(freqs)} frequencies)"
+
         eigendata_metadata = {
-            'frequency': float(data['frequency']),
+            'frequency': freq_info,
             'eigenvalues': data['eigenvalues'].copy(),
             'variance_explained': data['variance_explained'].copy()
         }
         print(f"Loaded eigendata: {pressure_fields.shape} "
-              f"(frequency={eigendata_metadata['frequency']:.1f} Hz, "
+              f"(frequency={freq_label}, "
               f"{pressure_fields.shape[1]} eigenvectors)")
     else:
         # Load regular pressure field from .npy file
@@ -188,13 +199,20 @@ def save_results(
             # Save as .npz preserving eigendata format
             eigendata_metadata = data['eigendata_metadata']
             fields_path = output_dir / output_filename
-            np.savez(
-                fields_path,
-                frequency=eigendata_metadata['frequency'],
+            freq_info = eigendata_metadata['frequency']
+
+            # Preserve the original format: scalar → 'frequency', list → 'frequencies'
+            save_kwargs = dict(
                 eigenvalues=eigendata_metadata['eigenvalues'],
                 eigenvectors=results['interpolated_fields'],
                 variance_explained=eigendata_metadata['variance_explained']
             )
+            if isinstance(freq_info, list):
+                save_kwargs['frequencies'] = np.array(freq_info)
+            else:
+                save_kwargs['frequency'] = freq_info
+
+            np.savez(fields_path, **save_kwargs)
             print(f"Saved interpolated eigendata to: {fields_path}")
         else:
             # Save as regular .npy

@@ -109,13 +109,24 @@ def load_input_data(config: Dict[str, Any]) -> Dict[str, Any]:
     if input_type == 'eigendata':
         data = np.load(input_cfg['pressure_field_path'])
         pressure_fields = data['eigenvectors']
+
+        # Handle both per-frequency ('frequency' scalar) and
+        # all-frequencies ('frequencies' array) eigendata formats
+        if 'frequency' in data:
+            freq_info = float(data['frequency'])
+            freq_label = f"{freq_info:.1f} Hz"
+        else:
+            freqs = data['frequencies']
+            freq_info = freqs.tolist()
+            freq_label = f"{freqs[0]:.0f}-{freqs[-1]:.0f} Hz ({len(freqs)} frequencies)"
+
         eigendata_metadata = {
-            'frequency': float(data['frequency']),
+            'frequency': freq_info,
             'eigenvalues': data['eigenvalues'].copy(),
             'variance_explained': data['variance_explained'].copy()
         }
         print(f"Loaded eigendata: {pressure_fields.shape} "
-              f"(frequency={eigendata_metadata['frequency']:.1f} Hz, "
+              f"(frequency={freq_label}, "
               f"{pressure_fields.shape[1]} eigenvectors)")
     else:
         pressure_fields = np.load(input_cfg['pressure_field_path'])
