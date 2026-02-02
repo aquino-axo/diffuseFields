@@ -22,19 +22,40 @@ class ReconstructionValidator:
         Directory containing eigendata_freq{i}.npz files.
     frequencies : ndarray
         Frequency array in Hz.
+    all_freqs_eigendata : Path, optional
+        Path to all-frequencies eigendata file (eigendata_all_freqs.npz).
+        When provided, uses the same eigenvectors for all frequencies
+        instead of loading per-frequency eigenvectors.
     """
 
     def __init__(
         self,
         eigendata_dir: Path,
-        frequencies: np.ndarray
+        frequencies: np.ndarray,
+        all_freqs_eigendata: Optional[Path] = None
     ):
         self.eigendata_dir = Path(eigendata_dir)
         self.frequencies = frequencies
         self.nfreqs = len(frequencies)
 
+        # Load all-frequencies eigendata once if provided
+        if all_freqs_eigendata is not None:
+            data = np.load(all_freqs_eigendata)
+            self._all_freqs_eigenvalues = data['eigenvalues']
+            self._all_freqs_eigenvectors = data['eigenvectors']
+        else:
+            self._all_freqs_eigenvalues = None
+            self._all_freqs_eigenvectors = None
+
     def load_eigendata(self, freq_idx: int) -> Tuple[np.ndarray, np.ndarray]:
-        """Load eigenvalues and eigenvectors for a frequency index."""
+        """Load eigenvalues and eigenvectors for a frequency index.
+
+        If all-frequencies eigendata was provided at construction,
+        returns those (shared) eigenvectors regardless of freq_idx.
+        """
+        if self._all_freqs_eigenvectors is not None:
+            return self._all_freqs_eigenvalues, self._all_freqs_eigenvectors
+
         filepath = self.eigendata_dir / f"eigendata_freq{freq_idx}.npz"
         data = np.load(filepath)
         return data['eigenvalues'], data['eigenvectors']

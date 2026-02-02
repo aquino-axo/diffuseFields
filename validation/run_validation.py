@@ -8,6 +8,7 @@ import argparse
 import json
 import numpy as np
 from pathlib import Path
+from typing import Optional
 
 from validate_reconstruction import ReconstructionValidator
 from validate_basis_dimension import BasisDimensionAnalyzer
@@ -58,16 +59,35 @@ def run_reconstruction_validation(
     eigendata_dir: Path,
     frequencies: np.ndarray,
     validation_set: np.ndarray,
-    output_dir: Path
+    output_dir: Path,
+    all_freqs_eigendata: Optional[Path] = None
 ) -> dict:
-    """Run reconstruction accuracy validation."""
+    """Run reconstruction accuracy validation.
+
+    Parameters
+    ----------
+    eigendata_dir : Path
+        Directory containing eigendata files.
+    frequencies : ndarray
+        Frequency array in Hz.
+    validation_set : ndarray
+        Validation pressure fields, shape (ndof, n_fields, nfreqs).
+    output_dir : Path
+        Output directory for results and plots.
+    all_freqs_eigendata : Path, optional
+        Path to all-frequencies eigendata file. When provided, uses
+        shared eigenvectors for all frequencies instead of per-frequency.
+    """
     print("\n" + "=" * 60)
     print("Reconstruction Accuracy Validation")
+    if all_freqs_eigendata is not None:
+        print("  (using all-frequencies eigenvectors)")
     print("=" * 60)
 
     validator = ReconstructionValidator(
         eigendata_dir=eigendata_dir,
-        frequencies=frequencies
+        frequencies=frequencies,
+        all_freqs_eigendata=all_freqs_eigendata
     )
 
     results = validator.validate(validation_set)
@@ -134,6 +154,13 @@ def main():
         default="both",
         help="Which analysis to run: reconstruction, dimension, or both"
     )
+    parser.add_argument(
+        "--all-freqs",
+        action="store_true",
+        default=False,
+        help="Use all-frequencies eigenvectors (eigendata_all_freqs.npz) "
+             "instead of per-frequency eigenvectors for reconstruction"
+    )
 
     args = parser.parse_args()
 
@@ -175,11 +202,21 @@ def main():
         if args.validation_set:
             validation_set = np.load(args.validation_set)
 
+            # Determine eigendata source
+            all_freqs_path = None
+            if args.all_freqs:
+                all_freqs_path = eigendata_dir / "eigendata_all_freqs.npz"
+                if not all_freqs_path.exists():
+                    print(f"\nError: {all_freqs_path} not found.")
+                    print("Run cone analysis with all_freqs_svd=true first.")
+                    return
+
             run_reconstruction_validation(
                 eigendata_dir=eigendata_dir,
                 frequencies=frequencies,
                 validation_set=validation_set,
-                output_dir=output_dir
+                output_dir=output_dir,
+                all_freqs_eigendata=all_freqs_path
             )
         else:
             print("\nReconstruction validation skipped: requires --validation-set")
