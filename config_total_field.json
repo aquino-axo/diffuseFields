@@ -1,0 +1,24 @@
+{
+    "input": {
+        "exodus_file": "data/cube.e",
+        "scattered_field_real": "pressure_real",
+        "scattered_field_imag": "pressure_imag",
+        "directions_file": "data/functions.txt",
+        "amplitudes_file": "data/loads.txt",
+        "nodeset_id": null
+    },
+    "physics": {
+        "frequencies": {
+            "min": 300.0,
+            "step": 100.0,
+            "max": 4000.0
+        },
+        "speed_of_sound": 343.0
+    },
+    "output": {
+        "total_field_real": "total_pressure_real",
+        "total_field_imag": "total_pressure_imag",
+        "incident_field_real": "incident_real",
+        "incident_field_imag": "incident_imag"
+    }
+}
