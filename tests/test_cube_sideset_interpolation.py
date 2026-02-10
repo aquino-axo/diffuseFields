@@ -19,7 +19,7 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 from exodus_side_interpolator import ExodusSideInterpolator
 from pressure_interpolator import PressureFieldInterpolator

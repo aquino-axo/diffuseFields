@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 # Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 from randomized_eigensolver import RandomizedEigensolver, compute_eigenvalues_for_variance
 from cone_diffuse_field import ConeDiffuseField
