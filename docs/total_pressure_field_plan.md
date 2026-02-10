@@ -133,11 +133,11 @@ The configuration supports multi-frequency computation. Each time step in the Ex
 - A range with min/step/max: `{"min": 100.0, "step": 100.0, "max": 1000.0}`
 - Omitted or null: process all time steps in the Exodus file
 
-**Example with frequency range:**
+**Example with separate source and target files:**
 ```json
 {
     "input": {
-        "exodus_file": "data/mesh.e",
+        "exodus_file": "data/source.e",
         "scattered_field_real": "scattered_pressure_real",
         "scattered_field_imag": "scattered_pressure_imag",
         "directions_file": "data/functions.txt",
@@ -153,6 +153,7 @@ The configuration supports multi-frequency computation. Each time step in the Ex
         "speed_of_sound": 343.0
     },
     "output": {
+        "exodus_file": "data/target.e",
         "total_field_real": "total_pressure_real",
         "total_field_imag": "total_pressure_imag",
         "incident_field_real": null,
@@ -186,18 +187,26 @@ The configuration supports multi-frequency computation. Each time step in the Ex
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| exodus_file | Yes | - | Path to Exodus database |
-| scattered_field_real | Yes | - | Name of real scattered pressure variable |
-| scattered_field_imag | Yes | - | Name of imaginary scattered pressure variable |
-| directions_file | Yes | - | Path to functions.txt |
-| amplitudes_file | Yes | - | Path to loads.txt |
-| nodeset_id | No | null | Nodeset ID (null = all nodes) |
-| frequencies | No | null | List, range (min/step/max), or null for all steps |
-| speed_of_sound | No | 343.0 | Speed of sound in m/s |
-| total_field_real | No | "total_pressure_real" | Output real field name |
-| total_field_imag | No | "total_pressure_imag" | Output imaginary field name |
-| incident_field_real | No | null | If set, write incident real field |
-| incident_field_imag | No | null | If set, write incident imaginary field |
+| input.exodus_file | Yes | - | Path to source Exodus database (with scattered field) |
+| input.scattered_field_real | Yes | - | Name of real scattered pressure variable |
+| input.scattered_field_imag | Yes | - | Name of imaginary scattered pressure variable |
+| input.directions_file | Yes | - | Path to functions.txt |
+| input.amplitudes_file | Yes | - | Path to loads.txt |
+| input.nodeset_id | No | null | Nodeset ID (null = all nodes) |
+| physics.frequencies | No | null | List, range (min/step/max), or null for all steps |
+| physics.speed_of_sound | No | 343.0 | Speed of sound in m/s |
+| output.exodus_file | No | null | Path to target Exodus file (null = write to source) |
+| output.total_field_real | No | "total_pressure_real" | Output real field name |
+| output.total_field_imag | No | "total_pressure_imag" | Output imaginary field name |
+| output.incident_field_real | No | null | If set, write incident real field |
+| output.incident_field_imag | No | null | If set, write incident imaginary field |
+
+**Note on source and target files:**
+
+- Source file (input.exodus_file): Contains scattered field from simulation
+- Target file (output.exodus_file): Clean geometry file where output is written
+- If output.exodus_file is null/omitted, output is written to the source file
+- Target file must have the same mesh geometry as source file
 
 **Note on time steps and frequencies:**
 - Each time step in Exodus corresponds to a frequency value stored as the time value

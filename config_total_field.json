@@ -1,6 +1,6 @@
 {
     "input": {
-        "exodus_file": "data/cube.e",
+        "exodus_file": "data/source.e",
         "scattered_field_real": "pressure_real",
         "scattered_field_imag": "pressure_imag",
         "directions_file": "data/functions.txt",
@@ -16,6 +16,7 @@
         "speed_of_sound": 343.0
     },
     "output": {
+        "exodus_file": "data/target.e",
         "total_field_real": "total_pressure_real",
         "total_field_imag": "total_pressure_imag",
         "incident_field_real": "incident_real",

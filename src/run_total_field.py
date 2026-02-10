@@ -2,12 +2,16 @@
 Driver script for computing total pressure fields from scattered fields.
 
 Reads configuration from a JSON file, parses direction and amplitude files,
-reads scattered field from ExodusII database, computes total field, and
-writes results back to the database.
+reads scattered field from a source ExodusII database, computes total field,
+and writes results to a target ExodusII database.
 
 The total field is P_total = P_incident + P_scattered, where:
 - P_incident is the superposition of incident plane waves
-- P_scattered is read from the Exodus database
+- P_scattered is read from the source Exodus database
+
+Supports separate source and target Exodus files:
+- Source file: contains scattered field from simulation
+- Target file: clean geometry file where output is written
 
 Usage:
     python run_total_field.py config_total_field.json
@@ -122,6 +126,7 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
             'speed_of_sound': 343.0
         },
         'output': {
+            'exodus_file': None,  # None = write to input file
             'total_field_real': 'total_pressure_real',
             'total_field_imag': 'total_pressure_imag',
             'incident_field_real': None,
@@ -156,6 +161,14 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
         path = inp[key]
         if not os.path.exists(path):
             raise FileNotFoundError(f"input.{key}: {path} not found")
+
+    # Validate output exodus file exists if specified
+    output = config['output']
+    if output['exodus_file'] is not None:
+        if not os.path.exists(output['exodus_file']):
+            raise FileNotFoundError(
+                f"output.exodus_file: {output['exodus_file']} not found"
+            )
 
     # Parse frequencies (optional - None means all time steps)
     physics = config['physics']
@@ -239,24 +252,31 @@ def run_total_field_computation(config: Dict[str, Any]) -> None:
             f"{len(amplitudes)} amplitudes"
         )
 
-    # Open Exodus database
-    print(f"\nOpening Exodus file: {inp['exodus_file']}")
+    # Determine source and target files
+    source_file = inp['exodus_file']
+    target_file = output.get('exodus_file') or source_file
+    separate_files = (target_file != source_file)
 
-    with ExodusNodalInterface(inp['exodus_file'], mode='a') as db:
-        # Get coordinates
+    print(f"\nSource Exodus file: {source_file}")
+    if separate_files:
+        print(f"Target Exodus file: {target_file}")
+
+    # Open source file for reading
+    with ExodusNodalInterface(source_file, mode='r') as source_db:
+        # Get coordinates from source
         if inp['nodeset_id'] is not None:
             print(f"  Using nodeset {inp['nodeset_id']}")
-            coords = db.get_nodeset_coords(inp['nodeset_id'])
-            node_indices = db.get_nodeset_nodes(inp['nodeset_id'])
+            coords = source_db.get_nodeset_coords(inp['nodeset_id'])
+            node_indices = source_db.get_nodeset_nodes(inp['nodeset_id'])
         else:
             print("  Using all nodes")
-            coords = db.get_coords()
+            coords = source_db.get_coords()
             node_indices = None
 
         print(f"  Number of nodes: {len(coords)}")
 
-        # Get time steps
-        exodus_times = db.get_times()
+        # Get time steps from source
+        exodus_times = source_db.get_times()
         print(f"  Number of time steps: {len(exodus_times)}")
 
         # Determine which frequencies/steps to process
@@ -267,6 +287,33 @@ def run_total_field_computation(config: Dict[str, Any]) -> None:
 
         print(f"\nProcessing {len(freq_step_map)} frequencies...")
 
+        # Read all scattered field data from source
+        scattered_data = []
+        for step, freq in freq_step_map:
+            if node_indices is not None:
+                scat_real = source_db.get_nodal_variable_on_nodeset(
+                    inp['scattered_field_real'],
+                    inp['nodeset_id'],
+                    step
+                )
+                scat_imag = source_db.get_nodal_variable_on_nodeset(
+                    inp['scattered_field_imag'],
+                    inp['nodeset_id'],
+                    step
+                )
+            else:
+                scat_real = source_db.get_nodal_variable(
+                    inp['scattered_field_real'],
+                    step
+                )
+                scat_imag = source_db.get_nodal_variable(
+                    inp['scattered_field_imag'],
+                    step
+                )
+            scattered_data.append((step, freq, scat_real, scat_imag))
+
+    # Open target file for writing
+    with ExodusNodalInterface(target_file, mode='a') as target_db:
         # Prepare output variables
         output_vars = [output['total_field_real'], output['total_field_imag']]
         if output['incident_field_real']:
@@ -274,7 +321,7 @@ def run_total_field_computation(config: Dict[str, Any]) -> None:
         if output['incident_field_imag']:
             output_vars.append(output['incident_field_imag'])
 
-        db.prepare_nodal_variables(output_vars)
+        target_db.prepare_nodal_variables(output_vars)
 
         # Create field calculator (frequency will be updated per step)
         field = TotalPressureField(
@@ -286,33 +333,11 @@ def run_total_field_computation(config: Dict[str, Any]) -> None:
         )
 
         # Process each frequency
-        for step, freq in freq_step_map:
+        for step, freq, scat_real, scat_imag in scattered_data:
             print(f"  Step {step}: frequency = {freq:.2f} Hz")
 
             # Update frequency
             field.set_frequency(freq)
-
-            # Read scattered field
-            if node_indices is not None:
-                scat_real = db.get_nodal_variable_on_nodeset(
-                    inp['scattered_field_real'],
-                    inp['nodeset_id'],
-                    step
-                )
-                scat_imag = db.get_nodal_variable_on_nodeset(
-                    inp['scattered_field_imag'],
-                    inp['nodeset_id'],
-                    step
-                )
-            else:
-                scat_real = db.get_nodal_variable(
-                    inp['scattered_field_real'],
-                    step
-                )
-                scat_imag = db.get_nodal_variable(
-                    inp['scattered_field_imag'],
-                    step
-                )
 
             # Compute incident field
             P_inc = field.compute_incident_field()
@@ -322,58 +347,58 @@ def run_total_field_computation(config: Dict[str, Any]) -> None:
 
             # Write results
             if node_indices is not None:
-                db.write_nodal_variable_on_nodeset(
+                target_db.write_nodal_variable_on_nodeset(
                     output['total_field_real'],
                     P_total.real,
                     inp['nodeset_id'],
                     step
                 )
-                db.write_nodal_variable_on_nodeset(
+                target_db.write_nodal_variable_on_nodeset(
                     output['total_field_imag'],
                     P_total.imag,
                     inp['nodeset_id'],
                     step
                 )
                 if output['incident_field_real']:
-                    db.write_nodal_variable_on_nodeset(
+                    target_db.write_nodal_variable_on_nodeset(
                         output['incident_field_real'],
                         P_inc.real,
                         inp['nodeset_id'],
                         step
                     )
                 if output['incident_field_imag']:
-                    db.write_nodal_variable_on_nodeset(
+                    target_db.write_nodal_variable_on_nodeset(
                         output['incident_field_imag'],
                         P_inc.imag,
                         inp['nodeset_id'],
                         step
                     )
             else:
-                db.write_nodal_variable(
+                target_db.write_nodal_variable(
                     output['total_field_real'],
                     P_total.real,
                     step
                 )
-                db.write_nodal_variable(
+                target_db.write_nodal_variable(
                     output['total_field_imag'],
                     P_total.imag,
                     step
                 )
                 if output['incident_field_real']:
-                    db.write_nodal_variable(
+                    target_db.write_nodal_variable(
                         output['incident_field_real'],
                         P_inc.real,
                         step
                     )
                 if output['incident_field_imag']:
-                    db.write_nodal_variable(
+                    target_db.write_nodal_variable(
                         output['incident_field_imag'],
                         P_inc.imag,
                         step
                     )
 
     print("\nTotal field computation complete!")
-    print(f"Results written to: {inp['exodus_file']}")
+    print(f"Results written to: {target_file}")
 
 
 def main():
