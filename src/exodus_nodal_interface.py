@@ -83,6 +83,34 @@ class ExodusNodalInterface:
         """Return total number of nodes in mesh."""
         return len(self.get_coords())
 
+    def get_node_num_map(self) -> np.ndarray:
+        """
+        Get the node number map (internal index to global node ID).
+
+        Returns
+        -------
+        node_map : ndarray, shape (n_nodes,)
+            Global node IDs for each internal node index.
+            If no map exists, returns 1-based sequential indices.
+        """
+        fh = self._exo.fh
+        if 'node_num_map' in fh.variables:
+            return np.array(fh.variables['node_num_map'][:])
+        # Default: identity map (1-based)
+        return np.arange(1, self.num_nodes() + 1)
+
+    def build_global_to_internal_map(self) -> dict:
+        """
+        Build a mapping from global node IDs to internal (0-based) indices.
+
+        Returns
+        -------
+        mapping : dict
+            Dictionary mapping global node ID to internal 0-based index.
+        """
+        node_map = self.get_node_num_map()
+        return {global_id: idx for idx, global_id in enumerate(node_map)}
+
     # ---- Nodeset operations ----
 
     def get_nodeset_ids(self) -> List[int]:

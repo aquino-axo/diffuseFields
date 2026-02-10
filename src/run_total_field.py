@@ -221,6 +221,42 @@ def get_frequency_step_mapping(
     return mapping
 
 
+def build_reorder_index(
+    source_node_map: np.ndarray,
+    target_node_map: np.ndarray
+) -> np.ndarray:
+    """
+    Build index array to reorder data from source to target node ordering.
+
+    Parameters
+    ----------
+    source_node_map : ndarray
+        Global node IDs for each source internal index.
+    target_node_map : ndarray
+        Global node IDs for each target internal index.
+
+    Returns
+    -------
+    reorder_idx : ndarray
+        Index array such that target_values = source_values[reorder_idx].
+        For each target internal index i, reorder_idx[i] is the source
+        internal index with the same global node ID.
+    """
+    # Build map from global ID to source internal index
+    global_to_source = {gid: idx for idx, gid in enumerate(source_node_map)}
+
+    # For each target internal index, find corresponding source index
+    reorder_idx = np.zeros(len(target_node_map), dtype=np.int64)
+    for target_idx, global_id in enumerate(target_node_map):
+        if global_id not in global_to_source:
+            raise ValueError(
+                f"Target node with global ID {global_id} not found in source"
+            )
+        reorder_idx[target_idx] = global_to_source[global_id]
+
+    return reorder_idx
+
+
 def run_total_field_computation(config: Dict[str, Any]) -> None:
     """
     Main workflow for total field computation.
@@ -275,6 +311,13 @@ def run_total_field_computation(config: Dict[str, Any]) -> None:
 
         print(f"  Number of nodes: {len(coords)}")
 
+        # Get source node map for later reordering
+        source_node_map = source_db.get_node_num_map()
+
+        # For nodeset case, get global IDs of nodeset nodes
+        if node_indices is not None:
+            source_nodeset_global_ids = source_node_map[node_indices - 1]
+
         # Get time steps from source
         exodus_times = source_db.get_times()
         print(f"  Number of time steps: {len(exodus_times)}")
@@ -323,6 +366,27 @@ def run_total_field_computation(config: Dict[str, Any]) -> None:
 
         target_db.prepare_nodal_variables(output_vars)
 
+        # Build reorder index if using separate files
+        reorder_idx = None
+        if separate_files:
+            target_node_map = target_db.get_node_num_map()
+            if node_indices is not None:
+                # For nodeset case: map source nodeset order to target nodeset order
+                target_node_indices = target_db.get_nodeset_nodes(inp['nodeset_id'])
+                target_nodeset_global_ids = target_node_map[target_node_indices - 1]
+                # Build map from global ID to source nodeset position
+                global_to_source_pos = {
+                    gid: pos for pos, gid in enumerate(source_nodeset_global_ids)
+                }
+                # For each target nodeset position, find source nodeset position
+                reorder_idx = np.array([
+                    global_to_source_pos[gid] for gid in target_nodeset_global_ids
+                ])
+            else:
+                # For all-nodes case: map source order to target order
+                reorder_idx = build_reorder_index(source_node_map, target_node_map)
+            print("  Built node reordering map for separate files")
+
         # Create field calculator (frequency will be updated per step)
         field = TotalPressureField(
             coordinates=coords,
@@ -345,55 +409,63 @@ def run_total_field_computation(config: Dict[str, Any]) -> None:
             # Compute total field
             P_total = field.compute_total_field(scat_real, scat_imag)
 
+            # Reorder values if using separate files
+            if reorder_idx is not None:
+                P_total_write = P_total[reorder_idx]
+                P_inc_write = P_inc[reorder_idx]
+            else:
+                P_total_write = P_total
+                P_inc_write = P_inc
+
             # Write results
             if node_indices is not None:
                 target_db.write_nodal_variable_on_nodeset(
                     output['total_field_real'],
-                    P_total.real,
+                    P_total_write.real,
                     inp['nodeset_id'],
                     step
                 )
                 target_db.write_nodal_variable_on_nodeset(
                     output['total_field_imag'],
-                    P_total.imag,
+                    P_total_write.imag,
                     inp['nodeset_id'],
                     step
                 )
                 if output['incident_field_real']:
                     target_db.write_nodal_variable_on_nodeset(
                         output['incident_field_real'],
-                        P_inc.real,
+                        P_inc_write.real,
                         inp['nodeset_id'],
                         step
                     )
                 if output['incident_field_imag']:
                     target_db.write_nodal_variable_on_nodeset(
                         output['incident_field_imag'],
-                        P_inc.imag,
+                        P_inc_write.imag,
                         inp['nodeset_id'],
                         step
                     )
             else:
                 target_db.write_nodal_variable(
                     output['total_field_real'],
-                    P_total.real,
+                    P_total_write.real,
                     step
                 )
                 target_db.write_nodal_variable(
                     output['total_field_imag'],
-                    P_total.imag,
+                    P_total_write.imag,
                     step
                 )
                 if output['incident_field_real']:
                     target_db.write_nodal_variable(
                         output['incident_field_real'],
-                        P_inc.real,
+                        P_inc_write.real,
                         step
                     )
                 if output['incident_field_imag']:
                     target_db.write_nodal_variable(
                         output['incident_field_imag'],
-                        P_inc.imag,
+                        P_inc_write.imag,
                         step
                     )
 
