@@ -123,7 +123,8 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
         },
         'physics': {
             'frequencies': None,  # None = use all time steps
-            'speed_of_sound': 343.0
+            'speed_of_sound': 343.0,
+            'density': 1.21  # kg/m³, default for air at 20°C
         },
         'output': {
             'exodus_file': None,  # None = write to input file
@@ -176,6 +177,9 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
     if physics['speed_of_sound'] <= 0:
         raise ValueError("physics.speed_of_sound must be positive")
+
+    if physics['density'] <= 0:
+        raise ValueError("physics.density must be positive")
 
     return config
 
@@ -393,7 +397,8 @@ def run_total_field_computation(config: Dict[str, Any]) -> None:
             directions=directions,
             amplitudes=amplitudes,
             frequency=1.0,  # placeholder
-            speed_of_sound=physics['speed_of_sound']
+            speed_of_sound=physics['speed_of_sound'],
+            density=physics['density']
         )
 
         # Process each frequency

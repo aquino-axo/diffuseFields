@@ -32,11 +32,13 @@ class TotalPressureField:
     directions : ndarray, shape (n_pws, 3)
         Unit direction vectors for each plane wave.
     amplitudes : ndarray, shape (n_pws,)
-        Complex amplitudes for each plane wave.
+        Complex velocity amplitudes for each plane wave (m/s).
     frequency : float
         Frequency in Hz.
     speed_of_sound : float, optional
         Speed of sound in m/s. Default 343.0.
+    density : float, optional
+        Fluid density in kg/m³. Default 1.21 (air at 20°C).
 
     Examples
     --------
@@ -51,13 +53,15 @@ class TotalPressureField:
         directions: np.ndarray,
         amplitudes: np.ndarray,
         frequency: float,
-        speed_of_sound: float = 343.0
+        speed_of_sound: float = 343.0,
+        density: float = 1.21
     ):
         self.coordinates = np.asarray(coordinates)
         self.directions = np.asarray(directions)
         self.amplitudes = np.asarray(amplitudes, dtype=np.complex128)
         self.frequency = frequency
         self.speed_of_sound = speed_of_sound
+        self.density = density
 
         # Validate shapes
         if self.coordinates.ndim != 2 or self.coordinates.shape[1] != 3:
@@ -86,6 +90,11 @@ class TotalPressureField:
         return 2 * np.pi * self.frequency / self.speed_of_sound
 
     @property
+    def impedance(self) -> float:
+        """Return characteristic acoustic impedance rho*c (Pa*s/m)."""
+        return self.density * self.speed_of_sound
+
+    @property
     def n_nodes(self) -> int:
         """Return number of nodes."""
         return len(self.coordinates)
@@ -100,12 +109,14 @@ class TotalPressureField:
         Compute incident pressure field at all nodes.
 
         The incident field is computed as:
-            P_inc[i] = sum_j [ A_j * exp(i * k * d_j · x_i) ]
+            P_inc[i] = rho*c * sum_j [ v_j * exp(i * k * d_j · x_i) ]
+
+        where v_j are velocity amplitudes and rho*c is the impedance.
 
         Returns
         -------
         P_inc : ndarray, shape (n_nodes,), complex
-            Incident pressure field at each node.
+            Incident pressure field at each node (Pa).
         """
         k = self.wavenumber
         # Compute dot products: (n_nodes, n_pws)
@@ -113,7 +124,8 @@ class TotalPressureField:
         # Phase factors: exp(i * k * d·x)
         phase = np.exp(1j * k * dot_products)
         # Sum over plane waves: (n_nodes, n_pws) @ (n_pws,) -> (n_nodes,)
-        P_inc = phase @ self.amplitudes
+        # Multiply by impedance to convert velocity to pressure
+        P_inc = self.impedance * (phase @ self.amplitudes)
         return P_inc
 
     def compute_total_field(
@@ -173,7 +185,8 @@ class TotalPressureField:
         directions_parser: DirectionsParser,
         amplitudes_parser: AmplitudesParser,
         frequency: float,
-        speed_of_sound: float = 343.0
+        speed_of_sound: float = 343.0,
+        density: float = 1.21
     ) -> 'TotalPressureField':
         """
         Factory method to create from parsed file data.
@@ -190,6 +203,8 @@ class TotalPressureField:
             Frequency in Hz.
         speed_of_sound : float, optional
             Speed of sound in m/s. Default 343.0.
+        density : float, optional
+            Fluid density in kg/m³. Default 1.21 (air).
 
         Returns
         -------
@@ -211,5 +226,6 @@ class TotalPressureField:
             directions=directions,
             amplitudes=amplitudes,
             frequency=frequency,
-            speed_of_sound=speed_of_sound
+            speed_of_sound=speed_of_sound,
+            density=density
         )
