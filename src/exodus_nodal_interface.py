@@ -165,7 +165,7 @@ class ExodusNodalInterface:
 
         raw = fh.variables[name_var][:]
         self._nodal_var_names = [
-            b"".join(row).decode().strip() for row in raw
+            b"".join(row).decode().rstrip('\x00').strip() for row in raw
         ]
         return self._nodal_var_names
 
