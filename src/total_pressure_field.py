@@ -109,9 +109,9 @@ class TotalPressureField:
         Compute incident pressure field at all nodes.
 
         The incident field is computed as:
-            P_inc[i] = rho*c * sum_j [ v_j * exp(i * k * d_j · x_i) ]
+            P_inc[i] = sum_j [ A_j * exp(i * k * d_j · x_i) ]
 
-        where v_j are velocity amplitudes and rho*c is the impedance.
+        where A_j are the complex amplitudes (already scaled for pressure).
 
         Returns
         -------
@@ -124,8 +124,7 @@ class TotalPressureField:
         # Phase factors: exp(i * k * d·x)
         phase = np.exp(1j * k * dot_products)
         # Sum over plane waves: (n_nodes, n_pws) @ (n_pws,) -> (n_nodes,)
-        # Multiply by impedance to convert velocity to pressure
-        P_inc = self.impedance * (phase @ self.amplitudes)
+        P_inc = phase @ self.amplitudes
         return P_inc
 
     def compute_total_field(
