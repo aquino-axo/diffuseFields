@@ -352,6 +352,77 @@ class ExodusSideInterpolator:
         key = ex.VAR_SIDE_SET_VAR(var_index, set_iid)
         self._exo.fh.variables[key][step - 1, :n_sides] = values
 
+    def get_sideset_variable_names(self) -> list:
+        """
+        Return the list of sideset variable names stored in the database.
+
+        Returns
+        -------
+        names : list of str
+            Sideset variable names in registration order, matching the
+            indexing used by ExodusII for `vals_sset_varN_ssM` arrays.
+            Empty list if no sideset variables are present.
+        """
+        return self._get_sideset_variable_names()
+
+    def read_sideset_variable(
+        self,
+        sideset_id: int,
+        variable_name: str,
+        step: int = 1,
+    ) -> np.ndarray:
+        """
+        Read a sideset variable for a given sideset and time step.
+
+        Parameters
+        ----------
+        sideset_id : int
+            The sideset ID.
+        variable_name : str
+            Name of the sideset variable (as registered in the database).
+        step : int, optional
+            Time step index (1-based). Default is 1.
+
+        Returns
+        -------
+        values : ndarray, shape (n_faces,)
+            Variable values, one per face in the sideset.
+        """
+        self._validate_sideset_id(sideset_id)
+
+        names = self._get_sideset_variable_names()
+        if variable_name not in names:
+            raise ValueError(
+                f"Sideset variable '{variable_name}' not found. "
+                f"Available variables: {names}"
+            )
+
+        from exodusii import exodus_h as ex
+        params = self._exo.get_side_set_params(sideset_id)
+        n_sides = params.num_sides
+
+        var_index = names.index(variable_name) + 1
+        set_iid = self._exo.get_side_set_iid(sideset_id)
+        key = ex.VAR_SIDE_SET_VAR(var_index, set_iid)
+
+        if key not in self._exo.fh.variables:
+            raise RuntimeError(
+                f"Sideset variable storage '{key}' not present in file."
+            )
+
+        times = self._exo.get_times()
+        n_steps = len(times)
+        if step < 1 or step > n_steps:
+            raise ValueError(
+                f"Time step {step} out of range [1, {n_steps}]"
+            )
+
+        values = np.array(
+            self._exo.fh.variables[key][step - 1, :n_sides],
+            dtype=np.float64,
+        )
+        return values
+
     def _get_sideset_variable_names(self) -> list:
         """Read existing sideset variable names from the netCDF handle."""
         if hasattr(self, '_sideset_var_names'):

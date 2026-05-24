@@ -1,0 +1,11 @@
+{
+    "input": {
+        "exodus_file": "data/cube.e",
+        "sideset_id": 6,
+        "variable_prefix": "pressure",
+        "time_step": 1
+    },
+    "output": {
+        "npy_path": "results/sideset_pod_modes.npy"
+    }
+}
