@@ -1,0 +1,21 @@
+{
+    "input": {
+        "transfer_matrix_path": "results/Tr.npy",
+        "transfer_matrix_var": null,
+        "pod_basis_path": "results/sideset_pod_modes.npy",
+        "experimental_cpsd_path": "data/exp_cpsd.mat",
+        "experimental_cpsd_var": "Sxx"
+    },
+    "physics": {
+        "frequencies": null
+    },
+    "regularization": {
+        "alpha": 1e-6,
+        "psd_tol_rel": 0.0
+    },
+    "output": {
+        "output_dir": "results_cpsd_inverse",
+        "save_figures": true,
+        "figure_format": "png"
+    }
+}

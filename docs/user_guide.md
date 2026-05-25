@@ -22,6 +22,8 @@ Analyzes scattered pressure fields on structures (e.g., a cone) excited by diffu
 2. **Cone CPSD Analysis** - Eigenvalue decomposition of scattered field CPSD matrices
 3. **Pressure Field Interpolation** - RBF-based interpolation between meshes
 4. **Diffuse Field Simulation** - Free-field plane wave convergence studies
+5. **Eigenvector Basis Validation** - Reconstruction-error and basis-dimension checks
+6. **CPSD Inverse Problem** - Recover a POD-reduced CPSD from sparse experimental sensor CPSDs (and lift back to full space)
 
 ## 1. Mesh Filtering
 
@@ -434,6 +436,159 @@ validation_results/
 ├── reconstruction_error.png       # Mean/max error vs frequency
 ├── error_histogram.png            # Overall error distribution
 └── error_histogram_octave_bands.png  # Error by octave band
+```
+
+## 6. CPSD Inverse Problem
+
+Recovers a reduced (POD-coordinate) CPSD `S_r` of shape `(n_pod, n_pod)` per frequency from a measured sensor CPSD `Ĝ` of shape `(n_sensors, n_sensors)`, using a reduced transfer matrix `T_r = T Φ` of shape `(n_sensors, n_pod, n_freq)`. Solves a Tikhonov-regularized inverse problem per frequency via a closed-form SVD expression. See `docs/cpsd_inverse_summary.md` for the math and `DiffuseFields_Inversion.pdf` for the derivation.
+
+### Usage
+
+```bash
+python run_cpsd_inverse.py config_cpsd_inverse.json
+```
+
+### Configuration File
+
+```json
+{
+    "input": {
+        "transfer_matrix_path": "results/Tr.npy",
+        "transfer_matrix_var": null,
+        "pod_basis_path": "results/sideset_pod_modes.npy",
+        "experimental_cpsd_path": "data/exp_cpsd.mat",
+        "experimental_cpsd_var": "Sxx"
+    },
+    "physics": {
+        "frequencies": null
+    },
+    "regularization": {
+        "alpha": 1e-6,
+        "psd_tol_rel": 0.0
+    },
+    "output": {
+        "output_dir": "results_cpsd_inverse",
+        "save_figures": true,
+        "figure_format": "png"
+    }
+}
+```
+
+### Configuration Options
+
+#### Input Section
+| Parameter | Description |
+|-----------|-------------|
+| `transfer_matrix_path` | `.npy` or `.mat` with reduced transfer matrix `T_r`, shape `(n_sensors, n_pod, n_freq)` |
+| `transfer_matrix_var` | MATLAB variable name; required when path ends in `.mat`, ignored for `.npy` |
+| `pod_basis_path` | `.npy` with POD basis `Φ`, shape `(N, n_pod)` |
+| `experimental_cpsd_path` | `.mat` with experimental CPSD `Ĝ`, shape `(n_sensors, n_sensors, n_freq)` |
+| `experimental_cpsd_var` | MATLAB variable name for the CPSD inside the `.mat` |
+
+#### Physics Section
+| Parameter | Description |
+|-----------|-------------|
+| `frequencies` | Optional list or `{min, step, max}`. Used only for plot/summary labels; alignment of files is always by frequency index. Length must equal `T_r.shape[2]` when supplied. |
+
+#### Regularization Section
+| Parameter | Description |
+|-----------|-------------|
+| `alpha` | Scalar α applied to every frequency (mutually exclusive with `alpha_sweep`) |
+| `alpha_sweep` | List of α values applied to every frequency (e.g. `[1e-8, 1e-6, 1e-4]`); SVD is reused across α |
+| `psd_tol_rel` | Relative threshold for clipping `Ĝ`'s eigenvalues before PSD square root (default 0.0 = clip only strictly negative) |
+
+#### Output Section
+| Parameter | Description |
+|-----------|-------------|
+| `output_dir` | Directory for per-frequency `.npz` files and summary |
+| `save_figures` | Save the residual-vs-frequency plot |
+| `figure_format` | `"png"`, `"pdf"`, `"svg"`, or `"eps"` |
+
+### Output Files
+
+```
+results_cpsd_inverse/
+├── cpsd_inverse_freq0.npz       # Recovered S_r at frequency index 0
+├── cpsd_inverse_freq1.npz
+├── ...
+├── summary.json                  # Inputs, α values, per-frequency residuals
+└── residual_vs_frequency.png     # Diagnostic plot (one curve per α)
+```
+
+Each per-frequency `.npz` contains, in **scalar-α mode**:
+
+- `S_r` — `(n_pod, n_pod)` complex
+- `alpha` — scalar
+- `residual_rel` — `||T_r S_r T_r^h − Ĝ||_F / ||Ĝ||_F`
+- `frequency` — scalar in Hz (only when `physics.frequencies` is set)
+
+…or in **sweep mode** (`alpha_sweep` set):
+
+- `S_r` — `(n_pod, n_pod, n_alpha)` complex
+- `alphas` — `(n_alpha,)` real
+- `residuals_rel` — `(n_alpha,)` real
+- `frequency` — scalar in Hz (when supplied)
+
+### Reconstructing the Full-Space CPSD
+
+The lifted CPSD `S* = Φ S_r Φ^h` of shape `(N, N, n_freq)` is potentially huge (`N` may be tens of thousands of sideset faces), so it is **not** materialized by the inverse driver. Use `run_reconstruct_full_cpsd.py` to lift selected frequencies, optionally only the diagonal.
+
+```bash
+python run_reconstruct_full_cpsd.py config_reconstruct_full_cpsd.json
+```
+
+#### Configuration File
+
+```json
+{
+    "input": {
+        "inverse_results_dir": "results_cpsd_inverse",
+        "pod_basis_path": "results/sideset_pod_modes.npy"
+    },
+    "reconstruction": {
+        "freq_indices": null,
+        "alpha_index": 0,
+        "mode": "diagonal",
+        "dtype": "complex128"
+    },
+    "output": {
+        "output_path": "results_cpsd_inverse/full_cpsd_diag.npy"
+    }
+}
+```
+
+#### Reconstruction Options
+
+| Parameter | Description |
+|-----------|-------------|
+| `freq_indices` | List of frequency indices to reconstruct (null = all available) |
+| `alpha_index` | Which α from the sweep to use (ignored for scalar-α inversion output) |
+| `mode` | `"full"` writes `(N, N, n_freq_selected)` complex; `"diagonal"` writes real `(N, n_freq_selected)` |
+| `dtype` | `"complex64"` (halves storage) or `"complex128"` |
+
+The output `.npy` is accompanied by a sidecar `.json` with the frequencies (if known), reconstruction mode, dtype, and input paths.
+
+### Programmatic Usage
+
+```python
+from cpsd_inverse import CPSDInverseSolver
+import numpy as np
+from scipy.io import loadmat
+
+T_r = np.load("results/Tr.npy")                 # (n_sensors, n_pod, n_freq)
+phi = np.load("results/sideset_pod_modes.npy")  # (N, n_pod)
+G   = loadmat("data/exp_cpsd.mat")["Sxx"]       # (n_sensors, n_sensors, n_freq)
+
+solver = CPSDInverseSolver(T_r, pod_basis=phi)
+
+# Single frequency, single α
+S_r, residuals = solver.solve_single_freq(
+    freq_idx=0, G=G[:, :, 0], alphas=np.array([1e-6])
+)
+S_r_f0 = S_r[:, :, 0]   # (n_pod, n_pod)
+
+# Lift back to full space (diagonal only)
+diag_S_full = solver.reconstruct_full_cpsd(S_r_f0, diagonal_only=True)
 ```
 
 ## Typical Workflow

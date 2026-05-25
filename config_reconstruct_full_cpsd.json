@@ -1,0 +1,15 @@
+{
+    "input": {
+        "inverse_results_dir": "results_cpsd_inverse",
+        "pod_basis_path": "results/sideset_pod_modes.npy"
+    },
+    "reconstruction": {
+        "freq_indices": null,
+        "alpha_index": 0,
+        "mode": "diagonal",
+        "dtype": "complex128"
+    },
+    "output": {
+        "output_path": "results_cpsd_inverse/full_cpsd_diag.npy"
+    }
+}
