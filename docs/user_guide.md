@@ -23,7 +23,8 @@ Analyzes scattered pressure fields on structures (e.g., a cone) excited by diffu
 3. **Pressure Field Interpolation** - RBF-based interpolation between meshes
 4. **Diffuse Field Simulation** - Free-field plane wave convergence studies
 5. **Eigenvector Basis Validation** - Reconstruction-error and basis-dimension checks
-6. **CPSD Inverse Problem** - Recover a POD-reduced CPSD from sparse experimental sensor CPSDs (and lift back to full space)
+6. **POD Mode Export from Sideset** - Pair `_real`/`_imag` sideset variables into a complex `(n_faces, n_modes)` `.npy`
+7. **CPSD Inverse Problem** - Recover a POD-reduced CPSD from sparse experimental sensor CPSDs (and lift back to full space)
 
 ## 1. Mesh Filtering
 
@@ -438,7 +439,61 @@ validation_results/
 └── error_histogram_octave_bands.png  # Error by octave band
 ```
 
-## 6. CPSD Inverse Problem
+## 6. POD Mode Export from Sideset
+
+Reads paired `_real`/`_imag` sideset variables from an ExodusII file (written by `run_sideset_interpolation.py`, see `docs/exodus_side_interpolator_summary.md`) and stacks them into a complex `(n_faces, n_modes)` `.npy` array suitable for use as the POD basis `Φ` in the CPSD inverse problem.
+
+### Usage
+
+```bash
+python run_sideset_pod_export.py config_sideset_pod_export.json
+python run_sideset_pod_export.py  # uses default config_sideset_pod_export.json
+```
+
+### Configuration File
+
+```json
+{
+    "input": {
+        "exodus_file": "data/cube.e",
+        "sideset_id": 6,
+        "variable_prefix": "pressure",
+        "time_step": 1
+    },
+    "output": {
+        "npy_path": "results/sideset_pod_modes.npy"
+    }
+}
+```
+
+### Configuration Options
+
+#### Input Section
+
+| Parameter | Description |
+|-----------|-------------|
+| `exodus_file` | Path to ExodusII database containing the sideset variables |
+| `sideset_id` | Integer sideset ID to read from |
+| `variable_prefix` | Variable name prefix (default `"pressure"`); the script reads `{prefix}_ev{i}_real` and `{prefix}_ev{i}_imag` for each mode `i` |
+| `time_step` | 1-based time-step index to read (default `1`) |
+
+#### Output Section
+
+| Parameter | Description |
+|-----------|-------------|
+| `npy_path` | Path to the output `.npy` file; parent directories are created if needed |
+
+### Output
+
+A single `.npy` file containing a complex `(n_faces, n_modes)` array whose column `i` is mode `i+1` paired from `{prefix}_ev{i}_real + 1j·{prefix}_ev{i}_imag`. Modes missing either component are skipped with a warning.
+
+### Behavior Notes
+
+- Modes are sorted by their numeric index (`ev1`, `ev2`, …, `ev10`, …).
+- The script fails if no sideset variables matching the pattern are found in the file, and prints the list of variables that were available.
+- This file is the typical source of the POD basis `Φ` consumed by `run_cpsd_inverse.py` and `run_reconstruct_full_cpsd.py` (Section 7).
+
+## 7. CPSD Inverse Problem
 
 Recovers a reduced (POD-coordinate) CPSD `S_r` of shape `(n_pod, n_pod)` per frequency from a measured sensor CPSD `Ĝ` of shape `(n_sensors, n_sensors)`, using a reduced transfer matrix `T_r = T Φ` of shape `(n_sensors, n_pod, n_freq)`. Solves a Tikhonov-regularized inverse problem per frequency via a closed-form SVD expression. See `docs/cpsd_inverse_summary.md` for the math and `DiffuseFields_Inversion.pdf` for the derivation.
 
@@ -617,6 +672,34 @@ python run_interpolation.py config_interpolation.json
 python run_diffuse_field.py config.json
 ```
 
+### CPSD Inversion from Experimental Sensor Data
+
+End-to-end pipeline that turns 3D-bulk POD eigenvectors into a full-space CPSD estimate `S*` on the structure surface, conditioned on measured sensor cross-spectra:
+
+```bash
+# 1. Cone (or other surface) eigenanalysis -> 3D POD modes in results_cone/
+python run_cone_analysis.py config_cone_range.json
+
+# 2. Interpolate those POD modes onto an ExodusII sideset and write them
+#    as paired _real/_imag sideset variables (one call per mode)
+#    See docs/exodus_side_interpolator_summary.md for config details
+python run_sideset_interpolation.py config_sideset_interpolation.json
+
+# 3. Read the sideset variables back into a (n_faces, n_modes) complex .npy
+#    that serves as the POD basis Phi for the inverse problem
+python run_sideset_pod_export.py config_sideset_pod_export.json
+
+# 4. Solve the per-frequency Tikhonov inverse for S_r given T_r, Phi, and
+#    the experimental sensor CPSD G_hat (.mat)
+python run_cpsd_inverse.py config_cpsd_inverse.json
+
+# 5. (Optional) Lift the reduced CPSD back to the full sideset space:
+#    S* = Phi @ S_r @ Phi^h, full matrix or diagonal-only
+python run_reconstruct_full_cpsd.py config_reconstruct_full_cpsd.json
+```
+
+The reduced transfer matrix `T_r = T Φ` (shape `(n_sensors, n_pod, n_freq)`) must be produced separately and saved as `.npy` or `.mat`; it is the projection of your full structure-to-sensor transfer matrix onto the same POD basis written by step 3.
+
 ## Data Formats
 
 ### Transfer Matrix (Tmatrix.npy)
@@ -636,6 +719,11 @@ python run_diffuse_field.py config.json
 - `eigenvalues`: Shape `(n_computed,)`
 - `eigenvectors`: Shape `(ndof, n_kept)`, complex-valued
 - `variance_explained`: Cumulative variance ratio
+
+### Sideset POD Basis (sideset_pod_modes.npy)
+- Shape: `(n_faces, n_modes)`, complex-valued
+- Column `i` is the POD mode `i+1` paired from sideset variables `{prefix}_ev{i}_real + 1j*{prefix}_ev{i}_imag`
+- Produced by `run_sideset_pod_export.py`; consumed as `Φ` by `run_cpsd_inverse.py` and `run_reconstruct_full_cpsd.py`
 
 ## Dependencies
 
