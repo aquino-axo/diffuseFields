@@ -125,6 +125,7 @@ python run_cpsd_inverse.py   # default config_cpsd_inverse.json
   "input": {
     "transfer_matrix_path": "results/Tr.npy",
     "transfer_matrix_var": null,
+    "transfer_matrix_scale": 1.0,
     "pod_basis_path":     "results/sideset_pod_modes.npy",
     "experimental_cpsd_path": "data/exp_cpsd.mat",
     "experimental_cpsd_var":  "Sxx"
@@ -145,6 +146,7 @@ python run_cpsd_inverse.py   # default config_cpsd_inverse.json
 |---|---|
 | `transfer_matrix_path` | `.npy` or `.mat` containing `T_r` of shape `(n_sensors, n_pod, n_freq)` |
 | `transfer_matrix_var` | MATLAB variable name; required only when the path ends in `.mat`; ignored for `.npy` |
+| `transfer_matrix_scale` | Real constant γ multiplied into `T_r` before solving (default `1.0`); used to reconcile a units mismatch between `T_r` and `Ĝ` |
 | `pod_basis_path` | `.npy` containing `Φ` of shape `(N, n_pod)` |
 | `experimental_cpsd_path` | `.mat` file containing `Ĝ` of shape `(n_sensors, n_sensors, n_freq)` |
 | `experimental_cpsd_var` | MATLAB variable name to load from the `.mat` |

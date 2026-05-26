@@ -72,6 +72,7 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
         'input': {
             'transfer_matrix_path': None,
             'transfer_matrix_var': None,   # required only for .mat input
+            'transfer_matrix_scale': 1.0,  # gamma: T_r is multiplied by this
             'pod_basis_path': None,
             'experimental_cpsd_path': None,
             'experimental_cpsd_var': None,
@@ -120,6 +121,14 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError(
             "input.transfer_matrix_var is required when "
             "transfer_matrix_path is a .mat file"
+        )
+
+    # Scaling constant gamma applied to T_r before solving.
+    scale = inp['transfer_matrix_scale']
+    if not isinstance(scale, (int, float)) or scale == 0 or not np.isfinite(scale):
+        raise ValueError(
+            f"input.transfer_matrix_scale must be a finite non-zero number, "
+            f"got {scale}"
         )
 
     reg = config['regularization']
@@ -247,6 +256,11 @@ def run_inversion(config: Dict[str, Any]) -> Dict[str, Any]:
     frequencies = config['physics']['frequencies']
     validate_shapes(T_r, phi, G, frequencies)
 
+    scale = float(config['input']['transfer_matrix_scale'])
+    if scale != 1.0:
+        T_r = T_r * scale
+        print(f"  Applied transfer_matrix_scale = {scale} to T_r")
+
     n_sensors, n_pod, n_freq = T_r.shape
     print(f"  T_r shape: {T_r.shape}  (n_sensors, n_pod, n_freq)")
     print(f"  Phi shape: {phi.shape}  (N, n_pod)")
@@ -339,6 +353,7 @@ def save_results(results: Dict[str, Any], config: Dict[str, Any]) -> None:
         'alphas': alphas.tolist(),
         'pod_basis_path': config['input']['pod_basis_path'],
         'transfer_matrix_path': config['input']['transfer_matrix_path'],
+        'transfer_matrix_scale': float(config['input']['transfer_matrix_scale']),
         'experimental_cpsd_path': config['input']['experimental_cpsd_path'],
         'experimental_cpsd_var': config['input']['experimental_cpsd_var'],
         'residual_rel': [r.tolist() for r in results['residuals_rel']],

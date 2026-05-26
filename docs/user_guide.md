@@ -536,6 +536,7 @@ python run_cpsd_inverse.py config_cpsd_inverse.json
 |-----------|-------------|
 | `transfer_matrix_path` | `.npy` or `.mat` with reduced transfer matrix `T_r`, shape `(n_sensors, n_pod, n_freq)` |
 | `transfer_matrix_var` | MATLAB variable name; required when path ends in `.mat`, ignored for `.npy` |
+| `transfer_matrix_scale` | Real constant γ multiplied into `T_r` before solving (default `1.0`). Use this to reconcile a units mismatch between `T_r` and the experimental CPSD `Ĝ` |
 | `pod_basis_path` | `.npy` with POD basis `Φ`, shape `(N, n_pod)` |
 | `experimental_cpsd_path` | `.mat` with experimental CPSD `Ĝ`, shape `(n_sensors, n_sensors, n_freq)` |
 | `experimental_cpsd_var` | MATLAB variable name for the CPSD inside the `.mat` |
