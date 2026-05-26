@@ -1,0 +1,13 @@
+{
+    "input": {
+        "diagonal_npy_path": "results_cpsd_inverse/full_cpsd_diag.npy",
+        "sidecar_json_path": "results_cpsd_inverse/full_cpsd_diag.json",
+        "exodus_file": "data/cube.e",
+        "sideset_id": 6
+    },
+    "output": {
+        "variable_name": "cpsd_diag",
+        "use_frequency_as_time": true,
+        "start_step": 1
+    }
+}

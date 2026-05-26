@@ -1,0 +1,25 @@
+{
+    "input": {
+        "diagonal_npy_path": "results_cpsd_inverse/full_cpsd_diag.npy",
+        "sidecar_json_path": "results_cpsd_inverse/full_cpsd_diag.json",
+        "exodus_file": "data/cube.e",
+        "sideset_id": 6
+    },
+    "selection": {
+        "indices": [0, 100, 500],
+        "coordinates": null
+    },
+    "plot": {
+        "log_scale": true,
+        "title": "CPSD diagonal vs frequency",
+        "ylabel": "S_ii",
+        "xlabel": null,
+        "figsize": [9, 5]
+    },
+    "output": {
+        "figure_path": "results_cpsd_inverse/diagonal_vs_frequency.png",
+        "figure_format": "png",
+        "dpi": 150,
+        "save_selection_csv": false
+    }
+}
