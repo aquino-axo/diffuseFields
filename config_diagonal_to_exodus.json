@@ -11,6 +11,7 @@
         "start_step": 1,
         "exodus_file": "data/cube_diag.e",
         "copy_from_exodus_file": "data/cube_backup.e",
-        "overwrite": false
+        "overwrite": true,
+        "strip_sideset_vars": true
     }
 }

@@ -10,12 +10,13 @@ match the POD basis exported from the same sideset by
 no interpolation is performed.
 
 Writes either in-place to `input.exodus_file` or to a separate
-`output.exodus_file`. Writing to a separate file is required when the
-in-place target already has its ExodusII num_sset_var dimension fully
-populated (netCDF-3 dimensions are fixed at creation): in that case,
-provide `output.copy_from_exodus_file` pointing at a clean mesh
-(typically the original, sideset-variable-free mesh) that will be copied
-to `output.exodus_file` before writing.
+`output.exodus_file`. When writing to a separate file that does not yet
+exist, the script seeds it from `output.copy_from_exodus_file` (falling
+back to `input.exodus_file`). By default the seed copy strips all
+existing sideset-variable metadata so that the netCDF-3
+`num_sset_var` dimension is removed and `cpsd_diag` can be registered
+without bumping into the fixed-dimension limit. Set
+`output.strip_sideset_vars` to false to copy the seed verbatim.
 
 Usage:
     python run_diagonal_to_exodus.py config_diagonal_to_exodus.json
@@ -53,6 +54,7 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
             'exodus_file': None,
             'copy_from_exodus_file': None,
             'overwrite': False,
+            'strip_sideset_vars': True,
         },
     }
     for section, section_defaults in defaults.items():
@@ -107,6 +109,73 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
     return config
 
 
+_SIDESET_VAR_DIM = 'num_sset_var'
+_SIDESET_VAR_NAMES_VAR = 'name_sset_var'
+_SIDESET_VAR_DATA_PREFIX = 'vals_sset_var'
+
+
+def _clean_mesh_copy(src_path: str, dst_path: str) -> None:
+    """
+    Copy an ExodusII file to ``dst_path`` while stripping all sideset
+    variable metadata. The destination retains every mesh entity (nodes,
+    elements, blocks, sidesets, nodesets, plus any nodal/element/global
+    variables), but its netCDF-3 ``num_sset_var`` dimension is dropped so
+    new sideset variables can be registered without bumping into the
+    fixed-dimension limit.
+
+    Implemented via the ``netCDF4`` Python bindings, which the project
+    already requires through ``exodusii``.
+    """
+    try:
+        import netCDF4
+    except ImportError as e:  # pragma: no cover - install-time issue
+        raise RuntimeError(
+            "netCDF4 is required to seed a clean exodus copy"
+        ) from e
+
+    src = netCDF4.Dataset(src_path, mode='r')
+    try:
+        try:
+            fmt = src.file_format
+        except AttributeError:
+            fmt = 'NETCDF3_CLASSIC'
+
+        dst = netCDF4.Dataset(dst_path, mode='w', format=fmt)
+        try:
+            for attr in src.ncattrs():
+                dst.setncattr(attr, src.getncattr(attr))
+
+            for name, dim in src.dimensions.items():
+                if name == _SIDESET_VAR_DIM:
+                    continue
+                dst.createDimension(
+                    name, None if dim.isunlimited() else len(dim)
+                )
+
+            for name, var in src.variables.items():
+                if name == _SIDESET_VAR_NAMES_VAR:
+                    continue
+                if name.startswith(_SIDESET_VAR_DATA_PREFIX):
+                    continue
+                # If this var references a dimension we dropped, skip it.
+                if any(d == _SIDESET_VAR_DIM for d in var.dimensions):
+                    continue
+
+                fill = getattr(var, '_FillValue', None)
+                new_var = dst.createVariable(
+                    name, var.dtype, var.dimensions, fill_value=fill
+                )
+                for attr in var.ncattrs():
+                    if attr == '_FillValue':
+                        continue
+                    new_var.setncattr(attr, var.getncattr(attr))
+                new_var[:] = var[:]
+        finally:
+            dst.close()
+    finally:
+        src.close()
+
+
 def _resolve_target_exodus(config: Dict[str, Any]) -> str:
     """
     Decide which exodus file we will open and (if needed) copy the seed
@@ -122,15 +191,22 @@ def _resolve_target_exodus(config: Dict[str, Any]) -> str:
     if os.path.exists(target):
         if not out['overwrite']:
             return target
-        # Overwrite: re-copy from the configured source.
         os.remove(target)
 
     copy_src = out['copy_from_exodus_file'] or inp['exodus_file']
     target_dir = os.path.dirname(os.path.abspath(target))
     if target_dir:
         os.makedirs(target_dir, exist_ok=True)
-    shutil.copyfile(copy_src, target)
-    print(f"Copied seed exodus: {copy_src} -> {target}")
+
+    if out['strip_sideset_vars']:
+        _clean_mesh_copy(copy_src, target)
+        print(
+            f"Seeded clean-mesh exodus (sideset vars stripped): "
+            f"{copy_src} -> {target}"
+        )
+    else:
+        shutil.copyfile(copy_src, target)
+        print(f"Copied seed exodus verbatim: {copy_src} -> {target}")
     return target
 
 
