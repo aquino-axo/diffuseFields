@@ -9,6 +9,14 @@ match the POD basis exported from the same sideset by
 `run_sideset_pod_export.py`; the row ordering is preserved end-to-end, so
 no interpolation is performed.
 
+Writes either in-place to `input.exodus_file` or to a separate
+`output.exodus_file`. Writing to a separate file is required when the
+in-place target already has its ExodusII num_sset_var dimension fully
+populated (netCDF-3 dimensions are fixed at creation): in that case,
+provide `output.copy_from_exodus_file` pointing at a clean mesh
+(typically the original, sideset-variable-free mesh) that will be copied
+to `output.exodus_file` before writing.
+
 Usage:
     python run_diagonal_to_exodus.py config_diagonal_to_exodus.json
 """
@@ -16,6 +24,7 @@ Usage:
 import argparse
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import Any, Dict
 
@@ -41,6 +50,9 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
             'variable_name': 'cpsd_diag',
             'use_frequency_as_time': True,
             'start_step': 1,
+            'exodus_file': None,
+            'copy_from_exodus_file': None,
+            'overwrite': False,
         },
     }
     for section, section_defaults in defaults.items():
@@ -81,8 +93,45 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("output.variable_name must be a non-empty string")
     if not isinstance(out['start_step'], int) or out['start_step'] < 1:
         raise ValueError("output.start_step must be an int >= 1")
+    if out['copy_from_exodus_file'] is not None:
+        if out['exodus_file'] is None:
+            raise ValueError(
+                "output.copy_from_exodus_file requires output.exodus_file"
+            )
+        if not os.path.exists(out['copy_from_exodus_file']):
+            raise FileNotFoundError(
+                f"output.copy_from_exodus_file not found: "
+                f"{out['copy_from_exodus_file']}"
+            )
 
     return config
+
+
+def _resolve_target_exodus(config: Dict[str, Any]) -> str:
+    """
+    Decide which exodus file we will open and (if needed) copy the seed
+    file into place. Returns the absolute target file path.
+    """
+    inp = config['input']
+    out = config['output']
+
+    if out['exodus_file'] is None:
+        return inp['exodus_file']
+
+    target = out['exodus_file']
+    if os.path.exists(target):
+        if not out['overwrite']:
+            return target
+        # Overwrite: re-copy from the configured source.
+        os.remove(target)
+
+    copy_src = out['copy_from_exodus_file'] or inp['exodus_file']
+    target_dir = os.path.dirname(os.path.abspath(target))
+    if target_dir:
+        os.makedirs(target_dir, exist_ok=True)
+    shutil.copyfile(copy_src, target)
+    print(f"Copied seed exodus: {copy_src} -> {target}")
+    return target
 
 
 def load_diagonal(
@@ -132,7 +181,7 @@ def write_diagonal_to_exodus(config: Dict[str, Any]) -> None:
         f"(physical frequencies {'present' if frequencies is not None else 'unavailable'})"
     )
 
-    exodus_file = inp['exodus_file']
+    exodus_file = _resolve_target_exodus(config)
     sideset_id = inp['sideset_id']
     var_name = out['variable_name']
     start_step = out['start_step']

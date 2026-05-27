@@ -8,6 +8,9 @@
     "output": {
         "variable_name": "cpsd_diag",
         "use_frequency_as_time": true,
-        "start_step": 1
+        "start_step": 1,
+        "exodus_file": "data/cube_diag.e",
+        "copy_from_exodus_file": "data/cube_backup.e",
+        "overwrite": false
     }
 }
