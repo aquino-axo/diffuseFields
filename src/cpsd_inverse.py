@@ -1,26 +1,32 @@
 """
 Reduced-basis Tikhonov inversion for cross-power spectral densities (CPSDs).
 
-Per the formulation in DiffuseFields_Inversion.pdf:
+POD reduction:
 
-  S    = Phi @ S_r @ Phi^h    (POD reduction, Phi in C^{N x n})
+  S    = Phi @ S_r @ Phi^h    (Phi in C^{N x n})
   T_r  = T @ Phi              (reduced transfer matrix, T_r in C^{m x n})
 
-The regularized inverse problem at each frequency is
+The target CPSD is factored G_hat ~ Psi Psi^h via PSD square root.
+Following Aquino & Bonnet, "Active Design of Diffuse Acoustic Fields in
+Enclosures" (eqs. 34--36), we regularize the per-direction least-squares
+problem
 
-  S_r*(alpha) = argmin (1/2) || T_r S_r T_r^h - G_hat ||_F^2
-                            + (alpha/2) || S_r ||_F^2
+  s_q(alpha) = argmin_u (1/2) || T_r u - phi_q ||_2^2 + alpha || u ||_2^2,
 
-Closed-form via the reduced SVD T_r = X Sigma Y^h:
+whose closed-form solution via the reduced SVD T_r = X Sigma Y^h is
 
-  H_hat        = X^h G_hat X
-  H_ij         = sigma_i sigma_j (H_hat)_ij / (sigma_i^2 sigma_j^2 + alpha)
-  S_r          = Y H Y^h
+  s_q(alpha) = Y (Sigma + alpha I)^{-1} X^h phi_q,
 
-Slide page 3 of the reference writes H_hat = Y G Y^h; that is a typo --
-dimensions only work as H_hat = X^h G X. This implementation uses the
-dimensionally correct form, computed via the equivalent ZZ^h identity with
-Z = X^h Psi where Psi Psi^h is the PSD projection of G_hat.
+and summing over the columns phi_q of Psi gives
+
+  S_r(alpha) = K K^h,   K := Y (Sigma + alpha I)^{-1} Z,   Z = X^h Psi.
+
+S_r is positive semidefinite by construction for any alpha >= 0 (cf.
+Remark 3 of the reference). This replaces the earlier entrywise filter
+H_ij = sigma_i sigma_j (Z Z^h)_ij / (sigma_i^2 sigma_j^2 + alpha)
+(reference eq. 43), which is Hermitian but not PSD-preserving when
+alpha > 0; both formulations converge to the same minimum-norm solution
+as alpha -> 0.
 """
 
 from typing import Optional, Tuple
@@ -146,15 +152,9 @@ class CPSDInverseSolver:
         X, sigma, Vh = np.linalg.svd(T_r, full_matrices=False)
         Y = Vh.conj().T  # (n_pod, r)
 
-        # H_hat = X^h G X computed via PSD square root of G:
+        # PSD square root: Psi Psi^h is the PSD projection of G.
         psi = self._psd_project(G, tol_rel=psd_tol_rel)  # (m, m)
         Z = X.conj().T @ psi                              # (r, m)
-        H_hat = Z @ Z.conj().T                            # (r, r)
-
-        # Constants for the closed-form element-wise solve.
-        s_outer = np.outer(sigma, sigma)        # sigma_i sigma_j
-        s2_outer = s_outer ** 2                  # sigma_i^2 sigma_j^2
-        numerator = s_outer * H_hat              # independent of alpha
 
         G_fro = np.linalg.norm(G, 'fro')
         S_r_out = np.empty(
@@ -163,9 +163,10 @@ class CPSDInverseSolver:
         residuals_rel = np.empty(alphas.size, dtype=np.float64)
 
         for k, alpha in enumerate(alphas):
-            H = numerator / (s2_outer + alpha)
-            S_r = Y @ H @ Y.conj().T
-            S_r = 0.5 * (S_r + S_r.conj().T)  # remove tiny imaginary drift
+            # K = Y (Sigma + alpha I)^{-1} Z, S_r = K K^h  (eqs. 35-36).
+            inv_filter = 1.0 / (sigma + alpha)             # (r,)
+            K = Y @ (inv_filter[:, None] * Z)              # (n_pod, m)
+            S_r = K @ K.conj().T                           # PSD by construction
             S_r_out[:, :, k] = S_r
 
             # n_sensors is typically small, so direct residual is cheap.
