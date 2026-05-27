@@ -14,7 +14,9 @@
         "title": "CPSD diagonal vs frequency",
         "ylabel": "S_ii",
         "xlabel": null,
-        "figsize": [9, 5]
+        "figsize": [9, 5],
+        "ylim": null,
+        "xlim": null
     },
     "output": {
         "figure_path": "results_cpsd_inverse/diagonal_vs_frequency.png",

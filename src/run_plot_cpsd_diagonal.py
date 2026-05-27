@@ -48,6 +48,8 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
             'ylabel': r'$S_{ii}$',
             'xlabel': None,
             'figsize': [9, 5],
+            'ylim': None,
+            'xlim': None,
         },
         'output': {
             'figure_path': 'results_cpsd_inverse/diagonal_vs_frequency.png',
@@ -83,6 +85,21 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
         raise FileNotFoundError(
             f"input.sidecar_json_path not found: {inp['sidecar_json_path']}"
         )
+
+    plot_cfg = config['plot']
+    for key in ('ylim', 'xlim'):
+        val = plot_cfg.get(key)
+        if val is None:
+            continue
+        if (
+            not isinstance(val, (list, tuple))
+            or len(val) != 2
+            or not all(isinstance(v, (int, float)) for v in val)
+            or val[0] >= val[1]
+        ):
+            raise ValueError(
+                f"plot.{key} must be null or a [min, max] pair with min < max"
+            )
 
     sel = config['selection']
     if sel['indices'] is None and sel['coordinates'] is None:
@@ -257,6 +274,10 @@ def plot_diagonal(
     ax.set_xlabel(plot_cfg['xlabel'] or xlabel)
     ax.set_ylabel(plot_cfg['ylabel'])
     ax.set_title(plot_cfg['title'])
+    if plot_cfg['ylim'] is not None:
+        ax.set_ylim(plot_cfg['ylim'])
+    if plot_cfg['xlim'] is not None:
+        ax.set_xlim(plot_cfg['xlim'])
     ax.grid(True, alpha=0.3)
     if len(selection) <= 20:
         ax.legend(loc='best', fontsize=8)
