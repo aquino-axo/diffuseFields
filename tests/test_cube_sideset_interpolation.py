@@ -71,6 +71,73 @@ def test_sideset_centroids_on_correct_face():
     print(f"  PASSED ({centroids.shape[0]} faces, all Y=0.5)")
 
 
+def test_all_sidesets_centroid_geometry():
+    """
+    Verify get_sideset_face_centroids on every face of the unit cube.
+
+    The cube spans [-0.5, 0.5]^3 with each face partitioned into a 4x4 grid
+    of HEX8 faces. For each sideset we check:
+      1. exactly 16 face centroids are returned,
+      2. the constant-coordinate axis is at +/-0.5 (i.e. on the face plane),
+      3. the two in-plane coordinates form the full 4x4 grid
+         {-0.375, -0.125, 0.125, 0.375}^2 with each combination present
+         exactly once.
+
+    Step (3) is the actual correctness check on centroid arithmetic: a bug
+    in node lookup or averaging would shift or duplicate in-plane positions
+    while still satisfying (2).
+    """
+    print("Test all-sidesets centroid geometry...")
+    if _skip_if_missing():
+        return
+
+    # (sideset_id, constant-axis index, expected constant value)
+    sideset_planes = {
+        1: (0, +0.5),  # X = +0.5
+        2: (2, +0.5),  # Z = +0.5
+        3: (0, -0.5),  # X = -0.5
+        4: (2, -0.5),  # Z = -0.5
+        5: (1, -0.5),  # Y = -0.5
+        6: (1, +0.5),  # Y = +0.5
+    }
+    expected_grid_vals = np.array([-0.375, -0.125, 0.125, 0.375])
+    expected_in_plane = {
+        (round(u, 4), round(v, 4))
+        for u in expected_grid_vals for v in expected_grid_vals
+    }
+
+    with ExodusSideInterpolator(str(CUBE_FILE)) as db:
+        for sid, (axis, plane_val) in sideset_planes.items():
+            c = db.get_sideset_face_centroids(sid)
+
+            assert c.shape == (16, 3), (
+                f"sideset {sid}: expected (16, 3), got {c.shape}"
+            )
+            np.testing.assert_allclose(
+                c[:, axis], plane_val, atol=1e-12,
+                err_msg=(
+                    f"sideset {sid}: axis-{axis} centroid should be "
+                    f"{plane_val}, got range [{c[:, axis].min()}, "
+                    f"{c[:, axis].max()}]"
+                ),
+            )
+
+            in_plane_axes = [i for i in range(3) if i != axis]
+            in_plane_pairs = {
+                (round(float(c[k, in_plane_axes[0]]), 4),
+                 round(float(c[k, in_plane_axes[1]]), 4))
+                for k in range(16)
+            }
+            assert in_plane_pairs == expected_in_plane, (
+                f"sideset {sid}: in-plane (axis {in_plane_axes}) centroids "
+                f"do not match the 4x4 grid; missing="
+                f"{expected_in_plane - in_plane_pairs}, extra="
+                f"{in_plane_pairs - expected_in_plane}"
+            )
+
+    print("  PASSED (6 sidesets x 16 centroids = 96 faces verified)")
+
+
 def test_constant_pressure_interpolation():
     """
     Test 2: Interpolating a constant field reproduces the constant.
@@ -225,6 +292,7 @@ def run_all_tests():
     print("=" * 60)
 
     test_sideset_centroids_on_correct_face()
+    test_all_sidesets_centroid_geometry()
     test_constant_pressure_interpolation()
     test_written_sideset_variables()
     test_unwritten_sidesets_are_zero()
