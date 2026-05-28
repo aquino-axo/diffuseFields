@@ -1,9 +1,10 @@
 """
 Unit tests for the cpsd_inverse module.
 
-Implements only the two correctness checks approved during planning:
+Implements only the correctness checks approved during planning:
 1. Recovery on synthetic data with several (m, n) shapes (m >= n).
 2. n=1 scalar reduction: s = |t|^2 g / (|t|^4 + alpha).
+3. Row-index subset: apply_row_subset slices T_r and G symmetrically.
 """
 
 import sys
@@ -14,6 +15,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 from cpsd_inverse import CPSDInverseSolver
+from run_cpsd_inverse import apply_row_subset
 
 
 def _random_psd(n: int, rng: np.random.Generator) -> np.ndarray:
@@ -75,8 +77,14 @@ def test_recovery_synthetic():
 
 def test_scalar_reduction():
     """
-    For T_r shape (1, 1, 1), scalar real g, alpha >= 0, the closed-form
-    reduces to s = |t|^2 g / (|t|^4 + alpha).
+    For T_r shape (1, 1, 1) with scalar t and real-positive g, the
+    PSD-preserving closed form (eqs. 35-36) reduces to
+
+        S_r = g / (|t| + alpha)^2.
+
+    Derivation: reduced SVD gives sigma = |t|, X = t/|t|, V = 1; the PSD
+    square root of [[g]] is sqrt(g), so K = conj(t) sqrt(g) / (|t|(|t|+alpha))
+    and S_r = |K|^2 = g/(|t|+alpha)^2.
     """
     print("Test 2: n=1 scalar reduction...")
     rng = np.random.default_rng(1)
@@ -96,7 +104,7 @@ def test_scalar_reduction():
         S_rec, _ = solver.solve_single_freq(0, G, np.array([alpha]))
         s_rec = S_rec[0, 0, 0]
 
-        expected = (abs(t) ** 2 * g) / (abs(t) ** 4 + alpha)
+        expected = g / (abs(t) + alpha) ** 2
         np.testing.assert_allclose(
             s_rec, expected, rtol=1e-12, atol=1e-14,
             err_msg=f"scalar mismatch for (t={t}, g={g}, alpha={alpha})"
@@ -104,11 +112,47 @@ def test_scalar_reduction():
     print("  PASSED")
 
 
+def test_apply_row_subset():
+    """
+    apply_row_subset must return T_r[I,:,:] and G[I,I,:] for the chosen
+    index set, with all frequency slices preserved. Exercises a
+    non-contiguous, unordered, integer-valued index set.
+    """
+    print("Test 3: apply_row_subset slicing...")
+    rng = np.random.default_rng(2)
+
+    m, n, nf = 9, 4, 3
+    T_r = (rng.standard_normal((m, n, nf))
+           + 1j * rng.standard_normal((m, n, nf)))
+    G = (rng.standard_normal((m, m, nf))
+         + 1j * rng.standard_normal((m, m, nf)))
+    # Hermitize G per frequency (matches the experimental-CPSD convention).
+    for f in range(nf):
+        G[:, :, f] = 0.5 * (G[:, :, f] + G[:, :, f].conj().T)
+
+    row_idx = np.array([7, 1, 4, 0, 5], dtype=np.int64)  # unordered subset
+    T_r_sub, G_sub = apply_row_subset(T_r, G, row_idx)
+
+    assert T_r_sub.shape == (row_idx.size, n, nf)
+    assert G_sub.shape == (row_idx.size, row_idx.size, nf)
+
+    for f in range(nf):
+        np.testing.assert_array_equal(T_r_sub[:, :, f], T_r[row_idx, :, f])
+        # Symmetric (rows AND cols) subset of G.
+        expected_G = G[np.ix_(row_idx, row_idx, [f])][:, :, 0]
+        np.testing.assert_array_equal(G_sub[:, :, f], expected_G)
+    print("  PASSED")
+
+
 def run_all_tests() -> bool:
     print("=" * 60)
     print("Running CPSD Inverse Solver Tests")
     print("=" * 60)
-    tests = [test_recovery_synthetic, test_scalar_reduction]
+    tests = [
+        test_recovery_synthetic,
+        test_scalar_reduction,
+        test_apply_row_subset,
+    ]
     passed = failed = 0
     for t in tests:
         try:

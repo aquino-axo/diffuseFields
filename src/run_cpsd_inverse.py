@@ -76,6 +76,11 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
             'pod_basis_path': None,
             'experimental_cpsd_path': None,
             'experimental_cpsd_var': None,
+            # Optional row-index subset: select a subset of T_r rows (and the
+            # corresponding rows/columns of G) to use in the inverse problem.
+            'row_indices_path': None,      # .mat file, optional
+            'row_indices_var': None,       # variable name inside the .mat
+            'row_indices_one_based': True, # MATLAB 1-based by default
         },
         'physics': {
             'frequencies': None,  # optional metadata; alignment is by index
@@ -129,6 +134,32 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError(
             f"input.transfer_matrix_scale must be a finite non-zero number, "
             f"got {scale}"
+        )
+
+    # Optional row-index subset.
+    if inp['row_indices_path'] is not None:
+        if not os.path.exists(inp['row_indices_path']):
+            raise FileNotFoundError(
+                f"row_indices_path: {inp['row_indices_path']} not found"
+            )
+        ri_ext = os.path.splitext(inp['row_indices_path'])[1].lower()
+        if ri_ext != '.mat':
+            raise ValueError(
+                f"input.row_indices_path must be a .mat file, got '{ri_ext}'"
+            )
+        if inp['row_indices_var'] is None:
+            raise ValueError(
+                "input.row_indices_var is required when "
+                "input.row_indices_path is set"
+            )
+        if not isinstance(inp['row_indices_one_based'], bool):
+            raise ValueError(
+                "input.row_indices_one_based must be a boolean, "
+                f"got {inp['row_indices_one_based']!r}"
+            )
+    elif inp['row_indices_var'] is not None:
+        raise ValueError(
+            "input.row_indices_var is set but input.row_indices_path is not"
         )
 
     reg = config['regularization']
@@ -214,6 +245,68 @@ def load_inputs(
     return T_r, phi, G
 
 
+def load_row_indices(
+    config: Dict[str, Any],
+    n_sensors: int,
+) -> Optional[np.ndarray]:
+    """
+    Load and validate the optional row-index subset.
+
+    Returns a 1D int64 array of 0-based, unique, in-range row indices, or
+    None if no subset was configured.
+    """
+    inp = config['input']
+    if inp['row_indices_path'] is None:
+        return None
+
+    raw = _load_mat_var(inp['row_indices_path'], inp['row_indices_var'])
+    idx = np.asarray(raw).squeeze()
+    if idx.ndim != 1:
+        raise ValueError(
+            f"row indices must be 1D (got shape {raw.shape} after squeeze)"
+        )
+    if idx.size == 0:
+        raise ValueError("row indices is empty")
+    if not np.issubdtype(idx.dtype, np.number):
+        raise ValueError(
+            f"row indices must be numeric, got dtype {idx.dtype}"
+        )
+
+    idx_int = idx.astype(np.int64)
+    if not np.array_equal(idx_int, idx):
+        raise ValueError("row indices must be integer-valued")
+
+    if inp['row_indices_one_based']:
+        idx_int = idx_int - 1
+
+    if idx_int.min() < 0 or idx_int.max() >= n_sensors:
+        raise ValueError(
+            f"row indices out of range: must lie in "
+            f"[{0 if not inp['row_indices_one_based'] else 1}, "
+            f"{n_sensors - 1 if not inp['row_indices_one_based'] else n_sensors}], "
+            f"got min={idx.min()}, max={idx.max()} "
+            f"(one_based={inp['row_indices_one_based']})"
+        )
+    if np.unique(idx_int).size != idx_int.size:
+        raise ValueError("row indices must be unique")
+    return idx_int
+
+
+def apply_row_subset(
+    T_r: np.ndarray,
+    G: np.ndarray,
+    row_idx: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Restrict T_r and G to the given row index set.
+
+    T_r' = T_r[row_idx, :, :]  and  G' = G[row_idx, :, :][:, row_idx, :].
+    """
+    T_r_sub = T_r[row_idx, :, :]
+    G_sub = G[np.ix_(row_idx, row_idx, np.arange(G.shape[2]))]
+    return T_r_sub, G_sub
+
+
 def validate_shapes(
     T_r: np.ndarray,
     phi: np.ndarray,
@@ -261,6 +354,17 @@ def run_inversion(config: Dict[str, Any]) -> Dict[str, Any]:
         T_r = T_r * scale
         print(f"  Applied transfer_matrix_scale = {scale} to T_r")
 
+    n_sensors_full = T_r.shape[0]
+    row_idx = load_row_indices(config, n_sensors_full)
+    if row_idx is not None:
+        T_r, G = apply_row_subset(T_r, G, row_idx)
+        print(
+            f"  Row-subset applied: kept {row_idx.size} of "
+            f"{n_sensors_full} rows from "
+            f"{config['input']['row_indices_path']}"
+            f" (one_based={config['input']['row_indices_one_based']})"
+        )
+
     n_sensors, n_pod, n_freq = T_r.shape
     print(f"  T_r shape: {T_r.shape}  (n_sensors, n_pod, n_freq)")
     print(f"  Phi shape: {phi.shape}  (N, n_pod)")
@@ -294,6 +398,8 @@ def run_inversion(config: Dict[str, Any]) -> Dict[str, Any]:
         'sweep_mode': sweep_mode,
         'S_r': [],
         'residuals_rel': [],
+        'row_indices': None if row_idx is None else row_idx.tolist(),
+        'n_sensors_full': int(n_sensors_full),
     }
     for f_idx in range(n_freq):
         S_r, res = solver.solve_single_freq(
@@ -357,6 +463,11 @@ def save_results(results: Dict[str, Any], config: Dict[str, Any]) -> None:
         'experimental_cpsd_path': config['input']['experimental_cpsd_path'],
         'experimental_cpsd_var': config['input']['experimental_cpsd_var'],
         'residual_rel': [r.tolist() for r in results['residuals_rel']],
+        'n_sensors_full': results['n_sensors_full'],
+        'row_indices_path': config['input']['row_indices_path'],
+        'row_indices_var': config['input']['row_indices_var'],
+        'row_indices_one_based': config['input']['row_indices_one_based'],
+        'row_indices': results['row_indices'],
     }
     if frequencies is not None:
         summary['frequencies'] = list(frequencies)

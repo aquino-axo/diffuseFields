@@ -5,7 +5,10 @@
         "transfer_matrix_scale": 1.0,
         "pod_basis_path": "results/sideset_pod_modes.npy",
         "experimental_cpsd_path": "data/exp_cpsd.mat",
-        "experimental_cpsd_var": "Sxx"
+        "experimental_cpsd_var": "Sxx",
+        "row_indices_path": null,
+        "row_indices_var": null,
+        "row_indices_one_based": true
     },
     "physics": {
         "frequencies": null
