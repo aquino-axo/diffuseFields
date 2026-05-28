@@ -24,6 +24,7 @@ implementation notes on the solver class.
 4. [Step 1 — POD modes from sideset → `.npy`](#step-1)
 5. [Step 2 — Per-frequency Tikhonov inversion](#step-2)
    - [Row-index subset of the data](#step-2-row-subset)
+   - [K-fold cross-validation for selecting α](#step-2-cv)
 6. [Step 3 — Lift reduced CPSD to full space](#step-3)
 7. [Step 4 — Write diagonal to an Exodus sideset](#step-4)
 8. [Step 5 — Plot diagonal CPSD vs frequency at sensor points](#step-5)
@@ -354,6 +355,137 @@ The driver raises with a clear message in any of these:
 - `row_indices_path` set but the file isn't `.mat`.
 - The variable is non-numeric, has more than one non-singleton axis,
   is empty, contains duplicates, or has indices out of range.
+
+<a name="step-2-cv"></a>
+### 5.2 K-fold cross-validation for selecting α
+
+When you don't know a priori what α to pass, enable K-fold
+cross-validation. The driver searches `regularization.alpha_sweep`,
+scores each candidate on held-out sensors, picks α*, and **refits** on
+the full (downselected) sensor set with that α*. The saved S_r is the
+refit one — exactly the same scalar-α `.npz` schema as a non-CV scalar
+run.
+
+CV is performed on the **already-downselected** sensor set: if
+`input.row_indices_path` is set, folds split that subset; otherwise
+folds split all `m` rows. The math operates the same way the rest of
+the pipeline does — symmetric row/column slicing of `T_r` and `G`.
+
+#### Config keys (top-level `cv` block)
+
+```json
+"cv": {
+  "enabled": false,
+  "k_folds": 5,
+  "alpha_mode": "global",
+  "seed": 0,
+  "save_fold_scores": false
+}
+```
+
+| Key | Notes |
+|---|---|
+| `cv.enabled` | Master switch. Default `false` → existing scalar/sweep behavior. |
+| `cv.k_folds` | Integer ≥ 2; default `5`. Validation error if `\|I\| < k_folds`. |
+| `cv.alpha_mode` | `"global"` (default) or `"per_freq"`. See below. |
+| `cv.seed` | Seed for the `numpy.default_rng` shuffle of the index set. Same seed → same partition. Default `0`. |
+| `cv.save_fold_scores` | When `true`, `cv_results.npz` includes the per-fold score array of shape `(n_freq, n_alpha, k_folds)`. Default `false` (saves memory). |
+
+When `cv.enabled` is `true`:
+
+- `regularization.alpha_sweep` becomes the CV candidate grid and is
+  **required**.
+- `regularization.alpha` (scalar) is **forbidden**.
+
+#### Algorithm
+
+For each frequency `f`, each fold `k`, and each candidate α:
+
+1. `I_train = I \ I_fold_k`, `I_val = I_fold_k`.
+2. Hermitize and PSD-clip both `G[I_train, I_train, f]` and
+   `G[I_val, I_val, f]` using `regularization.psd_tol_rel`.
+3. SVD of `T_r[I_train, :, f]` once per (f, k); reused across α.
+4. `S_r = K Kᴴ` via the same closed form as the non-CV solver.
+5. Predict `Ĝ_pred = T_r[I_val, :, f] S_r T_r[I_val, :, f]ᴴ`.
+6. `score(f, α, k) = ‖Ĝ_pred − G_val_clipped‖_F / ‖G_val_clipped‖_F`.
+
+CV score per `(f, α)` is the mean over folds.
+
+Selection:
+
+- `alpha_mode = "global"` — aggregate `score(f, α)` by mean over
+  frequencies → pick one scalar α* (default; recommended for stability
+  across frequencies).
+- `alpha_mode = "per_freq"` — independently `argmin_α score(f, α)` per
+  frequency → vector α*(f).
+
+Tie-breaking uses `numpy.argmin` (first occurrence), which on a sorted
+log-spaced grid picks the smallest α among ties.
+
+#### Refit
+
+After selection, the driver calls `solver.solve_single_freq(f, G[:,:,f],
+[α*(f)], psd_tol_rel)` for every frequency to produce the final S_r.
+Per-frequency `.npz` files have the scalar-α schema (`S_r (n_pod,
+n_pod)`, `alpha`, `residual_rel`, optional `frequency`) — downstream
+post-processing (Steps 3–5) does not need to know CV happened.
+
+#### Outputs added in CV mode
+
+`results_cpsd_inverse/cv_results.npz` containing:
+
+| Key | Shape & dtype |
+|---|---|
+| `alphas` | `(n_alpha,)` float64 — the searched grid |
+| `scores` | `(n_freq, n_alpha)` float64 — mean over folds |
+| `fold_scores` | `(n_freq, n_alpha, k_folds)` float64 — only if `save_fold_scores=true` |
+| `alpha_star` | `(n_freq,)` or `(1,)` float64 |
+| `alpha_mode` | scalar string |
+| `k_folds` | scalar int |
+| `seed` | scalar int |
+
+`summary.json` gains a `cv` subsection (`{enabled, k_folds, alpha_mode,
+seed, alpha_grid, alpha_star}`) plus `alphas_per_freq` (the α actually
+used at each frequency in the refit — useful for audit when α varies).
+
+Diagnostic plots written when `output.save_figures` is `true`:
+
+- `cv_score_vs_alpha.png` — log-log CV score curves, one per frequency,
+  with the global-mean curve overlaid; legend auto-disabled when
+  `n_freq > 20`. Marker at α*.
+- `cv_score_heatmap.png` — `(α, frequency)` pcolormesh, log α and log
+  color, α*(f) overlaid as red stars (per-frequency mode) or a vertical
+  dashed line (global mode).
+- `residual_vs_frequency.png` — unchanged: post-refit relative residual
+  on the full downselect with α*.
+
+#### When to prefer per_freq vs global
+
+- **Global** is the recommended default. It is more stable, easier to
+  interpret, and fully avoids overfitting α to noisy CV scores at
+  individual frequencies.
+- **Per-frequency** is appropriate when the SNR and conditioning of
+  `T_r(f)` are known to vary by orders of magnitude across the band and
+  you have enough sensors per fold to make the per-band CV score
+  trustworthy. Inspect `cv_score_heatmap.png` first to confirm α*(f) is
+  smooth rather than jumpy.
+
+#### CV error cases
+
+The driver raises a clear message in any of these:
+
+- `cv.enabled=true` and `regularization.alpha` is set (scalar mode).
+- `cv.enabled=true` and `regularization.alpha_sweep` is null.
+- `cv.k_folds < 2` or larger than `|I|`.
+- `cv.alpha_mode` is not `"per_freq"` or `"global"`.
+
+#### Cost note
+
+Inner cost per `(frequency, fold)` is dominated by an SVD of
+`T_r[I_train, :, f]` of size roughly `(|I|·(K-1)/K) × n_pod`; the α loop
+inside reuses the SVD. Total cost ≈ `n_freq × K × O(m·n_pod²)` which is
+trivial for the matrix sizes typical of this pipeline (a few seconds
+even for hundreds of frequencies).
 
 ---
 
@@ -702,7 +834,10 @@ rm -rf results/sideset_pod_modes.npy results_cpsd_inverse/ data/cube_diag.e
 | `row_indices.mat` | 1-D integer | upstream | Step 2 (optional) |
 | `cpsd_inverse_freqK.npz` (scalar α) | `S_r (n_pod, n_pod)`, `alpha`, `residual_rel`, `frequency` | Step 2 | Step 3 |
 | `cpsd_inverse_freqK.npz` (sweep α) | `S_r (n_pod, n_pod, n_alpha)`, `alphas`, `residuals_rel`, `frequency` | Step 2 | Step 3 |
-| `summary.json` | metadata incl. row-subset fields | Step 2 | engineer (audit trail) |
+| `summary.json` | metadata incl. row-subset and (when CV ran) `cv` block + `alphas_per_freq` | Step 2 | engineer (audit trail) |
+| `cv_results.npz` (CV only) | `alphas`, `scores (n_freq, n_alpha)`, `alpha_star`, optional `fold_scores (n_freq, n_alpha, K)` | Step 2 (CV) | engineer (audit) |
+| `cv_score_vs_alpha.png` (CV only) | log-log curves of CV score vs α | Step 2 (CV) | engineer |
+| `cv_score_heatmap.png` (CV only) | `(α, frequency)` pcolormesh of CV score | Step 2 (CV) | engineer |
 | `full_cpsd.npy` (mode=full) | `(N, N, n_freq_selected)` complex | Step 3 | downstream analysis |
 | `full_cpsd_diag.npy` (mode=diagonal) | `(N, n_freq_selected)` real | Step 3 | Steps 4, 5 |
 | `*_diag.json` sidecar | frequencies, mode, dtype, paths | Step 3 | Steps 4, 5 |
@@ -748,6 +883,16 @@ rm -rf results/sideset_pod_modes.npy results_cpsd_inverse/ data/cube_diag.e
   to flip `input.row_indices_one_based` to `false`, or the loader will
   silently shift everything by 1 and (usually) trigger an
   out-of-range error.
+- **CV folds split the downselect, not the full sensor set.** If you
+  enable both `input.row_indices_path` and `cv.enabled`, the K folds are
+  partitions of the downselected sensors — not the original `m`. Check
+  that `k_folds` is reasonable relative to `|I|` (`|I|/K` sensors per
+  held-out fold) before trusting the CV score.
+- **CV α grid coverage.** If CV picks the smallest or largest α in the
+  grid, your grid was likely too narrow. Widen it (e.g., extend by two
+  orders of magnitude on the picked side) and re-run. The test suite
+  guards against α* landing on a boundary on synthetic noise; on real
+  data a boundary win is a config bug, not a noise floor.
 - **Stale `cpsd_inverse_summary.md`.** That doc still describes the old
   entrywise filter `H_ij = σ_i σ_j (ZZᴴ)_ij / (σ_i² σ_j² + α)` from
   eq. 43 of the reference. The solver was switched to the PSD-preserving

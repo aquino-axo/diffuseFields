@@ -23,6 +23,7 @@ import numpy as np
 from scipy.io import loadmat
 
 from cpsd_inverse import CPSDInverseSolver
+from cpsd_inverse_cv import KFoldCVSelector
 
 
 def load_config(config_path: str) -> Dict[str, Any]:
@@ -89,6 +90,13 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
             'alpha': None,          # scalar applied to all frequencies
             'alpha_sweep': None,    # list applied to every frequency
             'psd_tol_rel': 0.0,
+        },
+        'cv': {
+            'enabled': False,
+            'k_folds': 5,
+            'alpha_mode': 'global',     # 'global' or 'per_freq'
+            'seed': 0,
+            'save_fold_scores': False,
         },
         'output': {
             'output_dir': 'results_cpsd_inverse',
@@ -196,6 +204,37 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
             f"regularization.psd_tol_rel must be a non-negative number, "
             f"got {reg['psd_tol_rel']}"
         )
+
+    cv = config['cv']
+    if not isinstance(cv['enabled'], bool):
+        raise ValueError(f"cv.enabled must be a bool, got {cv['enabled']!r}")
+    if cv['enabled']:
+        if not isinstance(cv['k_folds'], int) or cv['k_folds'] < 2:
+            raise ValueError(
+                f"cv.k_folds must be an integer >= 2, got {cv['k_folds']}"
+            )
+        if cv['alpha_mode'] not in ('per_freq', 'global'):
+            raise ValueError(
+                f"cv.alpha_mode must be 'per_freq' or 'global', "
+                f"got {cv['alpha_mode']!r}"
+            )
+        if not isinstance(cv['seed'], int):
+            raise ValueError(f"cv.seed must be an int, got {cv['seed']!r}")
+        if not isinstance(cv['save_fold_scores'], bool):
+            raise ValueError(
+                f"cv.save_fold_scores must be a bool, "
+                f"got {cv['save_fold_scores']!r}"
+            )
+        if reg['alpha'] is not None:
+            raise ValueError(
+                "cv.enabled=true is incompatible with regularization.alpha "
+                "(scalar); supply regularization.alpha_sweep as the CV grid"
+            )
+        if reg['alpha_sweep'] is None:
+            raise ValueError(
+                "cv.enabled=true requires regularization.alpha_sweep "
+                "(the CV candidate grid)"
+            )
 
     if config['physics']['frequencies'] is not None:
         config['physics']['frequencies'] = parse_frequencies(
@@ -378,16 +417,30 @@ def run_inversion(config: Dict[str, Any]) -> Dict[str, Any]:
         print(f"  Frequencies: aligned by index across files")
 
     reg = config['regularization']
-    if reg['alpha'] is not None:
+    cv_cfg = config['cv']
+    cv_enabled = cv_cfg['enabled']
+
+    if cv_enabled:
+        alphas = np.array(reg['alpha_sweep'], dtype=np.float64)
+        sweep_mode = False  # CV refit produces one alpha per frequency
+    elif reg['alpha'] is not None:
         alphas = np.array([reg['alpha']], dtype=np.float64)
         sweep_mode = False
     else:
         alphas = np.array(reg['alpha_sweep'], dtype=np.float64)
         sweep_mode = True
-    print(
-        f"  Regularization: {'sweep' if sweep_mode else 'scalar'} "
-        f"with alphas = {alphas.tolist()}"
-    )
+    if cv_enabled:
+        print(
+            f"  Regularization: CV mode (alpha_mode="
+            f"{cv_cfg['alpha_mode']!r}, k_folds={cv_cfg['k_folds']}, "
+            f"seed={cv_cfg['seed']}) over alpha grid "
+            f"{alphas.tolist()}"
+        )
+    else:
+        print(
+            f"  Regularization: {'sweep' if sweep_mode else 'scalar'} "
+            f"with alphas = {alphas.tolist()}"
+        )
     print(f"  PSD eigenvalue clip threshold (relative): {reg['psd_tol_rel']}")
 
     solver = CPSDInverseSolver(T_r, pod_basis=phi)
@@ -400,10 +453,59 @@ def run_inversion(config: Dict[str, Any]) -> Dict[str, Any]:
         'residuals_rel': [],
         'row_indices': None if row_idx is None else row_idx.tolist(),
         'n_sensors_full': int(n_sensors_full),
+        'alphas_per_freq': None,
+        'cv': None,
     }
+
+    if cv_enabled:
+        selector = KFoldCVSelector(
+            solver, G,
+            k_folds=cv_cfg['k_folds'],
+            seed=cv_cfg['seed'],
+            save_fold_scores=cv_cfg['save_fold_scores'],
+        )
+        print(
+            f"  Running CV: {selector.k_folds} folds x "
+            f"{solver.n_freq} frequencies x {alphas.size} alphas "
+            f"(sensors per fold ~= {solver.n_sensors // selector.k_folds})"
+        )
+        alpha_star, cv_scores, cv_fold_scores = selector.select(
+            alphas, psd_tol_rel=reg['psd_tol_rel'],
+            alpha_mode=cv_cfg['alpha_mode'],
+        )
+        if cv_cfg['alpha_mode'] == 'global':
+            alpha_global = float(alpha_star[0])
+            print(f"  CV (global) selected alpha = {alpha_global:.3e}")
+            alphas_per_freq = np.full(
+                n_freq, alpha_global, dtype=np.float64
+            )
+        else:
+            print(
+                f"  CV (per-frequency) alpha range: "
+                f"[{alpha_star.min():.3e}, {alpha_star.max():.3e}]"
+            )
+            alphas_per_freq = alpha_star.astype(np.float64)
+        results['alphas_per_freq'] = alphas_per_freq.tolist()
+        results['cv'] = {
+            'enabled': True,
+            'k_folds': cv_cfg['k_folds'],
+            'alpha_mode': cv_cfg['alpha_mode'],
+            'seed': cv_cfg['seed'],
+            'alpha_grid': alphas.tolist(),
+            'alpha_star': alpha_star.tolist(),
+            'scores': cv_scores,
+            'fold_scores': cv_fold_scores,
+        }
+
     for f_idx in range(n_freq):
+        if cv_enabled:
+            alphas_this = np.array(
+                [results['alphas_per_freq'][f_idx]], dtype=np.float64
+            )
+        else:
+            alphas_this = alphas
         S_r, res = solver.solve_single_freq(
-            f_idx, G[:, :, f_idx], alphas,
+            f_idx, G[:, :, f_idx], alphas_this,
             psd_tol_rel=reg['psd_tol_rel'],
         )
         results['S_r'].append(S_r)
@@ -413,7 +515,12 @@ def run_inversion(config: Dict[str, Any]) -> Dict[str, Any]:
             tag = f"f = {frequencies[f_idx]:8.2f} Hz (idx {f_idx})"
         else:
             tag = f"freq idx {f_idx}"
-        if sweep_mode:
+        if cv_enabled:
+            print(
+                f"  {tag} -> alpha*={alphas_this[0]:.2e}, "
+                f"refit residual {res[0]:.3e}"
+            )
+        elif sweep_mode:
             summary = ', '.join(
                 f"alpha={a:.2e}:res={r:.3e}" for a, r in zip(alphas, res)
             )
@@ -433,6 +540,7 @@ def save_results(results: Dict[str, Any], config: Dict[str, Any]) -> None:
     alphas = results['alphas']
     sweep_mode = results['sweep_mode']
 
+    alphas_per_freq = results.get('alphas_per_freq')
     for f_idx, (S_r, res) in enumerate(
         zip(results['S_r'], results['residuals_rel'])
     ):
@@ -443,9 +551,13 @@ def save_results(results: Dict[str, Any], config: Dict[str, Any]) -> None:
                 'residuals_rel': res,
             }
         else:
+            if alphas_per_freq is not None:
+                alpha_value = float(alphas_per_freq[f_idx])
+            else:
+                alpha_value = float(alphas[0])
             payload = {
                 'S_r': S_r[:, :, 0],
-                'alpha': float(alphas[0]),
+                'alpha': alpha_value,
                 'residual_rel': float(res[0]),
             }
         if frequencies is not None:
@@ -469,24 +581,67 @@ def save_results(results: Dict[str, Any], config: Dict[str, Any]) -> None:
         'row_indices_one_based': config['input']['row_indices_one_based'],
         'row_indices': results['row_indices'],
     }
+    if alphas_per_freq is not None:
+        summary['alphas_per_freq'] = list(alphas_per_freq)
+
+    cv_info = results.get('cv')
+    if cv_info is not None:
+        summary['cv'] = {
+            'enabled': cv_info['enabled'],
+            'k_folds': cv_info['k_folds'],
+            'alpha_mode': cv_info['alpha_mode'],
+            'seed': cv_info['seed'],
+            'alpha_grid': cv_info['alpha_grid'],
+            'alpha_star': cv_info['alpha_star'],
+        }
+
+        cv_payload: Dict[str, Any] = {
+            'alphas': np.asarray(cv_info['alpha_grid'], dtype=np.float64),
+            'scores': cv_info['scores'],
+            'alpha_star': np.asarray(
+                cv_info['alpha_star'], dtype=np.float64
+            ),
+            'alpha_mode': cv_info['alpha_mode'],
+            'k_folds': cv_info['k_folds'],
+            'seed': cv_info['seed'],
+        }
+        if cv_info['fold_scores'] is not None:
+            cv_payload['fold_scores'] = cv_info['fold_scores']
+        np.savez(out_dir / 'cv_results.npz', **cv_payload)
+
     if frequencies is not None:
         summary['frequencies'] = list(frequencies)
 
     with open(out_dir / 'summary.json', 'w') as f:
         json.dump(summary, f, indent=2)
 
-    print(f"Saved per-frequency .npz files and summary.json to {out_dir}")
+    if cv_info is not None:
+        print(
+            f"Saved per-frequency .npz files, cv_results.npz, and "
+            f"summary.json to {out_dir}"
+        )
+    else:
+        print(
+            f"Saved per-frequency .npz files and summary.json to {out_dir}"
+        )
 
 
 def generate_plots(results: Dict[str, Any], config: Dict[str, Any]) -> None:
-    """Generate the residual-vs-frequency diagnostic plot."""
+    """
+    Generate the residual-vs-frequency plot and (when CV ran) the CV
+    score-vs-alpha plot and the CV score heatmap.
+    """
     out_cfg = config['output']
     if not out_cfg['save_figures']:
         return
     out_dir = Path(out_cfg['output_dir'])
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    fig_format = out_cfg['figure_format']
     alphas = results['alphas']
+    sweep_mode = results['sweep_mode']
+    cv_info = results.get('cv')
+
     if results['frequencies'] is not None:
         x = np.asarray(results['frequencies'])
         xlabel = 'Frequency [Hz]'
@@ -494,22 +649,125 @@ def generate_plots(results: Dict[str, Any], config: Dict[str, Any]) -> None:
         x = np.arange(len(results['residuals_rel']))
         xlabel = 'Frequency index'
 
+    # ---- residual_vs_frequency.{fmt}: post-refit (or per-alpha) residual ----
     res_array = np.array(results['residuals_rel'])  # (n_freq, n_alpha)
-
     fig, ax = plt.subplots(figsize=(8, 5))
-    for k, alpha in enumerate(alphas):
-        ax.semilogy(x, res_array[:, k], 'o-', label=f'alpha = {alpha:.2e}')
+    if sweep_mode:
+        for k, alpha in enumerate(alphas):
+            ax.semilogy(x, res_array[:, k], 'o-', label=f'alpha = {alpha:.2e}')
+    elif cv_info is not None:
+        ax.semilogy(
+            x, res_array[:, 0], 'o-',
+            label=f"alpha* (CV, {cv_info['alpha_mode']})"
+        )
+    else:
+        ax.semilogy(x, res_array[:, 0], 'o-', label=f'alpha = {alphas[0]:.2e}')
     ax.set_xlabel(xlabel)
     ax.set_ylabel(r'$\|T_r S_r T_r^h - \hat G\|_F / \|\hat G\|_F$')
     ax.set_title('CPSD inversion: relative data-fit residual')
     ax.grid(True, alpha=0.3)
     ax.legend()
     fig.tight_layout()
-
-    fig_path = out_dir / f'residual_vs_frequency.{out_cfg["figure_format"]}'
+    fig_path = out_dir / f'residual_vs_frequency.{fig_format}'
     fig.savefig(fig_path, dpi=150)
     plt.close(fig)
     print(f"Saved residual plot to {fig_path}")
+
+    if cv_info is None:
+        return
+
+    _generate_cv_plots(cv_info, x, xlabel, out_dir, fig_format)
+
+
+def _generate_cv_plots(
+    cv_info: Dict[str, Any],
+    x: np.ndarray,
+    xlabel: str,
+    out_dir: Path,
+    fig_format: str,
+) -> None:
+    """Write cv_score_vs_alpha and cv_score_heatmap."""
+    from matplotlib.colors import LogNorm
+
+    cv_scores = np.asarray(cv_info['scores'])         # (n_freq, n_alpha)
+    cv_alphas = np.asarray(cv_info['alpha_grid'], dtype=np.float64)
+    n_freq = cv_scores.shape[0]
+    global_score = cv_scores.mean(axis=0)             # (n_alpha,)
+    best_per_f = np.argmin(cv_scores, axis=1)         # (n_freq,)
+
+    # ---- cv_score_vs_alpha.{fmt}: one line per frequency + global mean ----
+    fig, ax = plt.subplots(figsize=(8, 5))
+    if n_freq > 20:
+        ax.loglog(cv_alphas, cv_scores.T, '-', alpha=0.25, color='C0')
+    else:
+        for f in range(n_freq):
+            if x.dtype.kind == 'f':
+                lab = f'{x[f]:.0f} Hz'
+            else:
+                lab = f'idx {int(x[f])}'
+            ax.loglog(cv_alphas, cv_scores[f, :], 'o-', label=lab)
+    ax.loglog(
+        cv_alphas, global_score, 'k-',
+        linewidth=2, label='mean over f',
+    )
+    if cv_info['alpha_mode'] == 'global':
+        i = int(np.argmin(global_score))
+        ax.axvline(
+            cv_alphas[i], color='r', linestyle='--',
+            label=f'alpha* = {cv_alphas[i]:.2e}',
+        )
+    else:
+        ax.scatter(
+            cv_alphas[best_per_f],
+            cv_scores[np.arange(n_freq), best_per_f],
+            marker='*', s=70, color='red', zorder=5,
+            label='alpha*(f)',
+        )
+    ax.set_xlabel('alpha')
+    ax.set_ylabel('CV score (mean over folds)')
+    ax.set_title(f"CV score vs alpha (mode={cv_info['alpha_mode']})")
+    ax.grid(True, which='both', alpha=0.3)
+    if n_freq <= 20 or cv_info['alpha_mode'] == 'global':
+        ax.legend(fontsize=8, loc='best')
+    fig.tight_layout()
+    fig_path = out_dir / f'cv_score_vs_alpha.{fig_format}'
+    fig.savefig(fig_path, dpi=150)
+    plt.close(fig)
+    print(f"Saved CV score-vs-alpha plot to {fig_path}")
+
+    # ---- cv_score_heatmap.{fmt}: pcolormesh on (alpha, frequency) ----
+    fig, ax = plt.subplots(figsize=(9, 5))
+    eps = 0.0
+    if np.any(cv_scores > 0):
+        eps = np.min(cv_scores[cv_scores > 0]) * 1e-3
+    scores_pos = np.maximum(cv_scores, eps)
+    try:
+        norm = LogNorm(vmin=scores_pos.min(), vmax=scores_pos.max())
+        im = ax.pcolormesh(
+            cv_alphas, x, scores_pos, shading='nearest', norm=norm
+        )
+    except (ValueError, TypeError):
+        im = ax.pcolormesh(cv_alphas, x, cv_scores, shading='nearest')
+    ax.set_xscale('log')
+    ax.set_xlabel('alpha')
+    ax.set_ylabel(xlabel)
+    ax.set_title('CV score (mean over folds)')
+    plt.colorbar(im, ax=ax, label='score')
+    ax.plot(
+        cv_alphas[best_per_f], x, 'r*', markersize=8, label='alpha*(f)'
+    )
+    if cv_info['alpha_mode'] == 'global':
+        alpha_star = float(np.asarray(cv_info['alpha_star'])[0])
+        ax.axvline(
+            alpha_star, color='white', linewidth=2, linestyle='--',
+            label=f'alpha* = {alpha_star:.2e}',
+        )
+    ax.legend(loc='best')
+    fig.tight_layout()
+    fig_path = out_dir / f'cv_score_heatmap.{fig_format}'
+    fig.savefig(fig_path, dpi=150)
+    plt.close(fig)
+    print(f"Saved CV score heatmap to {fig_path}")
 
 
 def main():

@@ -15,7 +15,15 @@
     },
     "regularization": {
         "alpha": 1e-6,
+        "alpha_sweep": null,
         "psd_tol_rel": 0.0
+    },
+    "cv": {
+        "enabled": false,
+        "k_folds": 5,
+        "alpha_mode": "global",
+        "seed": 0,
+        "save_fold_scores": false
     },
     "output": {
         "output_dir": "results_cpsd_inverse",
