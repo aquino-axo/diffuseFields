@@ -4,21 +4,26 @@
         "sidecar_json_path": "results_cpsd_inverse/full_cpsd_diag.json",
         "exodus_file": "data/cube.e",
         "sideset_id": 6,
-        "validation_path": null,
-        "validation_var": null
+        "validation_path": "data/validation_cpsd.mat",
+        "validation_var": "G_val"
     },
     "selection": {
-        "indices": [0, 100, 500],
-        "coordinates": null,
-        "match_tolerance": null
+        "indices": null,
+        "coordinates": [
+            [0.375, 0.5, 0.375],
+            [0.125, 0.5, 0.375],
+            [-0.125, 0.5, 0.125],
+            [-0.375, 0.5, -0.375]
+        ],
+        "match_tolerance": 0.05
     },
     "plot": {
-        "kind": "lines",
+        "kind": ["lines", "box", "error"],
         "log_scale": true,
-        "title": "CPSD diagonal vs frequency",
-        "ylabel": "S_ii",
+        "title": "Uplifted CPSD diagonal: solution vs validation",
+        "ylabel": "S_ii [unit^2/Hz]",
         "xlabel": null,
-        "figsize": [9, 5],
+        "figsize": [10, 6],
         "ylim": null,
         "xlim": null
     },
@@ -26,7 +31,7 @@
         "figure_path": "results_cpsd_inverse/diagonal_vs_frequency.png",
         "figure_format": "png",
         "dpi": 150,
-        "save_selection_csv": false,
+        "save_selection_csv": true,
         "top_n": null
     }
 }
