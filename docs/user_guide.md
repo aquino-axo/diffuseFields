@@ -624,6 +624,20 @@ python run_reconstruct_full_cpsd.py config_reconstruct_full_cpsd.json
 
 The output `.npy` is accompanied by a sidecar `.json` with the frequencies (if known), reconstruction mode, dtype, and input paths.
 
+### Plotting the Diagonal CPSD vs Frequency
+
+`run_plot_cpsd_diagonal.py` plots the uplifted diagonal `(N, n_freq)` from the reconstruction step, optionally compared against a **validation** data set. Select the plot kind(s) with `plot.kind` — a string or list drawn from:
+
+- `"lines"` — per-location autopower `S_ii(f)` vs frequency. With a validation set, the inverse solution is solid and the validation data dashed, sharing one colour per location (solution-only without one).
+- `"box"` — at each frequency, the distribution of `S_ii(f)` across the selected locations as side-by-side solution/validation boxes (IQR box, 5th/95th-percentile whiskers); switches to median + percentile bands above 40 frequencies. *Requires validation.*
+- `"error"` — per-location relative-L2 error of the solution vs validation autopower spectrum, `‖S_ii^sol − S_ii^val‖₂ / ‖S_ii^val‖₂`, as a bar chart sorted worst → best (optional `output.top_n` cap). Ranks which sensors the inversion reproduces best/worst. *Requires validation.*
+
+```bash
+python run_plot_cpsd_diagonal.py config_plot_cpsd_diagonal.json
+```
+
+The validation data is a full CPSD `(n_loc, n_loc, n_freq_full)` (complex) supplied via `input.validation_path` (+ `input.validation_var` for `.mat`). Its real diagonal is aligned to the solution **by `selection.coordinates` order** — validation row `k` is the `k`-th coordinate — so a validation set requires coordinate selection. Its frequency axis must span the full inversion frequency set; it is sliced to the reconstructed subset via the sidecar's `freq_indices`. See [`docs/cpsd_inversion_guide.md`](cpsd_inversion_guide.md) §8 for the full config-key reference, alignment rules, and CSV-export details.
+
 ### Programmatic Usage
 
 ```python
