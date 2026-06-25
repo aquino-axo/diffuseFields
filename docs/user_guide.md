@@ -25,6 +25,7 @@ Analyzes scattered pressure fields on structures (e.g., a cone) excited by diffu
 5. **Eigenvector Basis Validation** - Reconstruction-error and basis-dimension checks
 6. **POD Mode Export from Sideset** - Pair `_real`/`_imag` sideset variables into a complex `(n_faces, n_modes)` `.npy`
 7. **CPSD Inverse Problem** - Recover a POD-reduced CPSD from sparse experimental sensor CPSDs (and lift back to full space)
+8. **Basis-Projection Residual** - Project one transfer matrix (data) onto another's column space (basis) per frequency and report the relative approximation error
 
 ## 1. Mesh Filtering
 
@@ -660,6 +661,77 @@ S_r_f0 = S_r[:, :, 0]   # (n_pod, n_pod)
 # Lift back to full space (diagonal only)
 diag_S_full = solver.reconstruct_full_cpsd(S_r_f0, diagonal_only=True)
 ```
+
+## 8. Basis-Projection Residual Analysis
+
+Given two transfer matrices of the same form as `data/Tmatrix_cone_only.npy` (shape `(ndof, npws, nfreq)`), one is treated as a **basis** and the other as **data**. At each frequency, the data columns are orthogonally projected onto the **column space** of the basis, and the relative residual of that best (least-squares) approximation is reported and plotted versus frequency. This answers: *how well can the basis's achievable pressure fields represent the data fields, frequency by frequency?*
+
+For each frequency `i` with `B = basis[:, :, i]` and `D = data[:, :, i]`:
+
+- Orthonormalize the basis columns via thin SVD, keeping columns with singular value `s > rtol·s[0]` (numerical rank), giving an orthonormal `Q`.
+- Best approximation: `D_hat = Q (Q^h D)` (orthogonal projection onto `col(B)`).
+- Relative residual: `||D − D_hat||_F / ||D||_F`.
+
+The basis column space lives in `C^ndof`, so both matrices must share the same `ndof` (rows) and the same number of frequencies; the number of plane waves (columns) may differ.
+
+### Usage
+
+```bash
+# Minimal: two .npy files
+python run_basis_projection.py basis.npy data.npy
+
+# With output directory and Hz-labeled x-axis
+python run_basis_projection.py basis.npy data.npy \
+    --output-dir results_projection --frequencies data/freqs.npy
+
+# MATLAB inputs (variable auto-detected if the .mat has a single variable)
+python run_basis_projection.py basis.mat data.mat --basis-var H --data-var H
+```
+
+### Command-Line Options
+
+| Option | Description |
+|--------|-------------|
+| `basis` | Path to the basis matrix (`.npy` or `.mat`), positional |
+| `data` | Path to the data matrix (`.npy` or `.mat`), positional |
+| `--output-dir` | Output directory (default: `results_projection`) |
+| `--basis-var` | Variable name inside a `.mat` basis file (auto-detected if single variable) |
+| `--data-var` | Variable name inside a `.mat` data file (auto-detected if single variable) |
+| `--rtol` | Relative singular-value threshold for basis numerical rank (default: `1e-12`) |
+| `--frequencies` | Path to a 1-D `.npy` of frequencies or a comma-separated list, used to label the x-axis in Hz (default: frequency index) |
+| `--figure-format` | `"png"`, `"pdf"`, `"svg"`, or `"eps"` (default: `png`) |
+| `--no-plots` | Skip plot generation |
+
+### Output Files
+
+```
+results_projection/
+├── projection_report.json              # Metadata, per-frequency residuals/ranks, summary stats
+├── relative_residual.csv               # frequency, relative_residual, basis_rank
+└── relative_residual_vs_frequency.png  # Relative residual vs frequency plot
+```
+
+`projection_report.json` contains:
+
+- `metadata`: basis/data paths, `ndof`, `npws_basis`, `npws_data`, `nfreq`, `rtol`
+- `per_frequency`: `frequencies`, `relative_residual` (null where `||D||_F = 0`), `basis_rank`
+- `summary`: mean / min / max relative residual, and the worst frequency
+
+### Programmatic Usage
+
+```python
+from basis_projector import BasisProjection
+import numpy as np
+
+basis = np.load("basis.npy")   # (ndof, npws_basis, nfreq)
+data  = np.load("data.npy")    # (ndof, npws_data,  nfreq)
+
+result = BasisProjection(basis, data, rtol=1e-12).project()
+result["relative_residual"]    # (nfreq,) ||D - D_hat||_F / ||D||_F
+result["basis_rank"]           # (nfreq,) numerical rank of the basis
+```
+
+**Note**: column-space projection requires matching `ndof`. The two shipped matrices `data/Tmatrix.npy` (3206 rows) and `data/Tmatrix_cone_only.npy` (2701 rows) have different `ndof` and so cannot be cross-projected directly; the tool raises a clear `ValueError` for mismatched rows or frequencies.
 
 ## Typical Workflow
 
