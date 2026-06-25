@@ -52,7 +52,7 @@ No build step or package manager required. Dependencies: NumPy, SciPy, Matplotli
 **cone_visualizer.py** - `ConeVisualizer` class for 3D plots of pressure fields and eigenvalue decay on cone surfaces.
 
 **basis_projector.py** - `BasisProjection` class for per-frequency basis-projection residual:
-- Takes a frequency-independent basis `(ndof, npws_basis)` and a per-frequency data matrix `(ndof, npws_data, nfreq)` (frequency is the data's third axis)
+- Takes a frequency-independent basis `(ndof, npws_basis)` and a per-frequency data matrix `(ndof, npws_data, nfreq)` (frequency is the data's third axis); 2D data `(ndof, npws_data)` is treated as a single frequency
 - Orthonormalizes the basis columns once via thin SVD (truncated at numerical rank `s > rtol*s[0]`); at each data frequency orthogonally projects the data columns onto the basis column space: `D_hat = Q @ (Q^H @ D)`
 - Reports the relative residual `||D - D_hat||_F / ||D||_F` per frequency, plus the (scalar) basis rank and per-frequency data norm
 - Basis and data must share `ndof` (rows); `npws` (columns) may differ

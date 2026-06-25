@@ -40,7 +40,8 @@ class BasisProjection:
     basis : ndarray
         Frequency-independent basis matrix, shape (ndof, npws_basis).
     data : ndarray
-        Per-frequency data transfer matrix, shape (ndof, npws_data, nfreq).
+        Data transfer matrix, shape (ndof, npws_data, nfreq). A 2D array
+        (ndof, npws_data) is accepted as a single frequency (nfreq = 1).
     rtol : float, optional
         Relative singular-value threshold for the numerical rank of the basis.
         Default 1e-12.
@@ -55,9 +56,13 @@ class BasisProjection:
                 f"basis must be 2D (ndof, npws_basis) and frequency-independent, "
                 f"got shape {basis.shape}"
             )
+        # A 2D data array is a single frequency: promote to (ndof, npws_data, 1).
+        if data.ndim == 2:
+            data = data[:, :, np.newaxis]
         if data.ndim != 3:
             raise ValueError(
-                f"data must be 3D (ndof, npws_data, nfreq), got shape {data.shape}"
+                f"data must be 2D (ndof, npws_data) for a single frequency or "
+                f"3D (ndof, npws_data, nfreq), got shape {data.shape}"
             )
         if basis.shape[0] != data.shape[0]:
             raise ValueError(

@@ -664,7 +664,7 @@ diag_S_full = solver.reconstruct_full_cpsd(S_r_f0, diagonal_only=True)
 
 ## 8. Basis-Projection Residual Analysis
 
-The **basis** is a single frequency-independent matrix `B` of shape `(ndof, npws_basis)`. The **data** is a per-frequency transfer matrix of the same form as `data/Tmatrix_cone_only.npy`, shape `(ndof, npws_data, nfreq)` — the frequency dimension is the third axis of the data. At each frequency, the data columns are orthogonally projected onto the **column space** of the basis, and the relative residual of that best (least-squares) approximation is reported and plotted versus frequency. This answers: *how well can the basis's achievable pressure fields represent the data fields, frequency by frequency?*
+The **basis** is a single frequency-independent matrix `B` of shape `(ndof, npws_basis)`. The **data** is a per-frequency transfer matrix of the same form as `data/Tmatrix_cone_only.npy`, shape `(ndof, npws_data, nfreq)` — the frequency dimension is the third axis of the data. A 2D data array `(ndof, npws_data)` is accepted as a single frequency (`nfreq = 1`). At each frequency, the data columns are orthogonally projected onto the **column space** of the basis, and the relative residual of that best (least-squares) approximation is reported and plotted versus frequency. This answers: *how well can the basis's achievable pressure fields represent the data fields, frequency by frequency?*
 
 The basis column space does not change with frequency, so its orthonormalization is computed once. With `D = data[:, :, i]` at frequency `i`:
 
@@ -725,6 +725,7 @@ import numpy as np
 
 basis = np.load("basis.npy")   # (ndof, npws_basis)        frequency-independent
 data  = np.load("data.npy")    # (ndof, npws_data, nfreq)  frequency on third axis
+                               # (ndof, npws_data) is accepted as a single frequency
 
 result = BasisProjection(basis, data, rtol=1e-12).project()
 result["relative_residual"]    # (nfreq,) ||D - D_hat||_F / ||D||_F

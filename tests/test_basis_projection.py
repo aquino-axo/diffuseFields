@@ -91,9 +91,32 @@ def test_rank_tolerance():
     print("  PASSED")
 
 
+def test_2d_data_single_frequency():
+    """Test 5: 2D data is treated as a single frequency (nfreq = 1)."""
+    print("Test 5: 2D data -> single frequency...")
+    rng = np.random.default_rng(2)
+    ndof, npws_b, npws_d = 30, 6, 4
+    basis = _random_complex(rng, (ndof, npws_b))
+    data_2d = basis @ _random_complex(rng, (npws_b, npws_d))   # (ndof, npws_d), in span
+
+    proj = BasisProjection(basis, data_2d)
+    result = proj.project()
+    assert proj.nfreq == 1, proj.nfreq
+    assert result["relative_residual"].shape == (1,), result["relative_residual"].shape
+    # Data lies in the basis span, so the single residual is ~0.
+    assert result["relative_residual"][0] < 1e-10, result["relative_residual"][0]
+
+    # 2D and (ndof, npws_d, 1) inputs must agree.
+    result_3d = BasisProjection(basis, data_2d[:, :, np.newaxis]).project()
+    np.testing.assert_allclose(
+        result["relative_residual"], result_3d["relative_residual"]
+    )
+    print("  PASSED")
+
+
 def test_input_validation():
-    """Test 5: shape mismatches and wrong dimensionality raise ValueError."""
-    print("Test 5: input validation...")
+    """Test 6: shape mismatches and wrong dimensionality raise ValueError."""
+    print("Test 6: input validation...")
     basis = np.zeros((10, 4), dtype=np.complex128)
     data = np.zeros((10, 5, 3), dtype=np.complex128)
 
@@ -111,10 +134,10 @@ def test_input_validation():
     except ValueError:
         pass
 
-    # Data must be 3D.
+    # Data must be 2D or 3D; 1D is invalid.
     try:
-        BasisProjection(basis, np.zeros((10, 5), dtype=np.complex128))
-        raise AssertionError("expected ValueError for 2D data")
+        BasisProjection(basis, np.zeros(10, dtype=np.complex128))
+        raise AssertionError("expected ValueError for 1D data")
     except ValueError:
         pass
     print("  PASSED")
@@ -130,6 +153,7 @@ def run_all_tests():
         test_data_orthogonal_residual_one,
         test_known_analytic_case,
         test_rank_tolerance,
+        test_2d_data_single_frequency,
         test_input_validation,
     ]
 

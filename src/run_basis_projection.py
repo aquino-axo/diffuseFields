@@ -4,7 +4,8 @@ Driver script for per-frequency basis-projection residual analysis.
 The basis is a frequency-independent matrix of shape ``(ndof, npws_basis)``.
 The data is a per-frequency transfer matrix of the same form as
 ``data/Tmatrix_cone_only.npy``, shape ``(ndof, npws_data, nfreq)`` -- the
-frequency dimension is the third axis of the data. The data columns are
+frequency dimension is the third axis of the data. A 2D data array
+``(ndof, npws_data)`` is accepted as a single frequency. The data columns are
 projected onto the column space of the basis at each frequency, and the
 relative residual of the best (least-squares) approximation is reported and
 plotted versus frequency.
@@ -199,8 +200,8 @@ frequency on its third axis. The basis and data must share ndof.
     )
     parser.add_argument(
         "data",
-        help="Path to the per-frequency data matrix, shape "
-             "(ndof, npws, nfreq) (.npy or .mat)",
+        help="Path to the data matrix, shape (ndof, npws, nfreq), or "
+             "(ndof, npws) for a single frequency (.npy or .mat)",
     )
     parser.add_argument(
         "--output-dir", default="results_projection",
