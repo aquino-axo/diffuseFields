@@ -24,12 +24,13 @@ def test_data_in_span_residual_zero():
     rng = np.random.default_rng(0)
     ndof, npws_b, npws_d, nfreq = 40, 8, 5, 4
 
-    basis = _random_complex(rng, (ndof, npws_b, nfreq))
+    # Frequency-independent 2D basis; per-frequency data drawn from its span.
+    basis = _random_complex(rng, (ndof, npws_b))
     data = np.empty((ndof, npws_d, nfreq), dtype=np.complex128)
     for i in range(nfreq):
         # Each data column is a random linear combination of basis columns.
         coeffs = _random_complex(rng, (npws_b, npws_d))
-        data[:, :, i] = basis[:, :, i] @ coeffs
+        data[:, :, i] = basis @ coeffs
 
     result = BasisProjection(basis, data).project()
     np.testing.assert_array_less(result["relative_residual"], 1e-10)
@@ -45,10 +46,10 @@ def test_data_orthogonal_residual_one():
 
     # Basis lives entirely in the first block of coordinates, data in the second:
     # the two column spaces are orthogonal, so no part of the data is captured.
-    basis = np.zeros((ndof, npws_b, nfreq), dtype=np.complex128)
+    basis = np.zeros((ndof, npws_b), dtype=np.complex128)
+    basis[:half, :] = _random_complex(rng, (half, npws_b))
     data = np.zeros((ndof, npws_d, nfreq), dtype=np.complex128)
     for i in range(nfreq):
-        basis[:half, :, i] = _random_complex(rng, (half, npws_b))
         data[half:, :, i] = _random_complex(rng, (half, npws_d))
 
     result = BasisProjection(basis, data).project()
@@ -61,58 +62,59 @@ def test_known_analytic_case():
     print("Test 3: known analytic residual...")
     # Basis column space = span{e_x} in R^3. Data column = (3, 4, 0)^T.
     # Projection keeps (3,0,0); residual = ||(0,4,0)|| / ||(3,4,0)|| = 4/5.
-    basis = np.array([[1.0], [0.0], [0.0]]).reshape(3, 1, 1)
+    basis = np.array([[1.0], [0.0], [0.0]])           # (3, 1)
     data = np.array([[3.0], [4.0], [0.0]]).reshape(3, 1, 1)
 
     result = BasisProjection(basis, data).project()
     np.testing.assert_allclose(result["relative_residual"][0], 0.8, atol=1e-12)
-    assert result["basis_rank"][0] == 1, result["basis_rank"][0]
+    assert result["basis_rank"] == 1, result["basis_rank"]
     print("  PASSED")
 
 
 def test_rank_tolerance():
     """Test 4: near-zero singular value excluded from the numerical rank."""
     print("Test 4: rtol controls basis numerical rank...")
-    ndof, nfreq = 10, 1
+    ndof = 10
     # Two well-scaled orthogonal columns plus one tiny-norm column.
     col0 = np.zeros(ndof); col0[0] = 1.0
     col1 = np.zeros(ndof); col1[1] = 1.0
     col_tiny = np.zeros(ndof); col_tiny[2] = 1e-9
-    basis = np.stack([col0, col1, col_tiny], axis=1).reshape(ndof, 3, nfreq)
-    data = np.zeros((ndof, 1, nfreq)); data[0, 0, 0] = 1.0
+    basis = np.stack([col0, col1, col_tiny], axis=1)   # (ndof, 3)
+    data = np.zeros((ndof, 1, 1)); data[0, 0, 0] = 1.0
     data = data.astype(np.complex128)
 
     # Loose tolerance drops the tiny column (rank 2); tight tolerance keeps it (rank 3).
-    rank_loose = BasisProjection(basis, data, rtol=1e-6).project()["basis_rank"][0]
-    rank_tight = BasisProjection(basis, data, rtol=1e-12).project()["basis_rank"][0]
+    rank_loose = BasisProjection(basis, data, rtol=1e-6).project()["basis_rank"]
+    rank_tight = BasisProjection(basis, data, rtol=1e-12).project()["basis_rank"]
     assert rank_loose == 2, rank_loose
     assert rank_tight == 3, rank_tight
     print("  PASSED")
 
 
 def test_input_validation():
-    """Test 5: shape mismatches and non-3D inputs raise ValueError."""
+    """Test 5: shape mismatches and wrong dimensionality raise ValueError."""
     print("Test 5: input validation...")
-    good = np.zeros((10, 4, 3), dtype=np.complex128)
+    basis = np.zeros((10, 4), dtype=np.complex128)
+    data = np.zeros((10, 5, 3), dtype=np.complex128)
 
     # Mismatched ndof.
     try:
-        BasisProjection(good, np.zeros((8, 4, 3), dtype=np.complex128))
+        BasisProjection(basis, np.zeros((8, 5, 3), dtype=np.complex128))
         raise AssertionError("expected ValueError for mismatched ndof")
     except ValueError:
         pass
 
-    # Mismatched nfreq.
+    # Basis must be 2D (frequency-independent).
     try:
-        BasisProjection(good, np.zeros((10, 4, 2), dtype=np.complex128))
-        raise AssertionError("expected ValueError for mismatched nfreq")
+        BasisProjection(np.zeros((10, 4, 3), dtype=np.complex128), data)
+        raise AssertionError("expected ValueError for 3D basis")
     except ValueError:
         pass
 
-    # Non-3D input.
+    # Data must be 3D.
     try:
-        BasisProjection(np.zeros((10, 4)), good)
-        raise AssertionError("expected ValueError for non-3D basis")
+        BasisProjection(basis, np.zeros((10, 5), dtype=np.complex128))
+        raise AssertionError("expected ValueError for 2D data")
     except ValueError:
         pass
     print("  PASSED")

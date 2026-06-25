@@ -1,20 +1,21 @@
 """
 Driver script for per-frequency basis-projection residual analysis.
 
-Given two transfer matrices of the same form as ``data/Tmatrix_cone_only.npy``
-(shape ``(ndof, npws, nfreq)``), one is treated as a "basis" and the other as
-"data". The data columns are projected onto the column space of the basis at
-each frequency, and the relative residual of the best (least-squares)
-approximation is reported and plotted versus frequency.
+The basis is a frequency-independent matrix of shape ``(ndof, npws_basis)``.
+The data is a per-frequency transfer matrix of the same form as
+``data/Tmatrix_cone_only.npy``, shape ``(ndof, npws_data, nfreq)`` -- the
+frequency dimension is the third axis of the data. The data columns are
+projected onto the column space of the basis at each frequency, and the
+relative residual of the best (least-squares) approximation is reported and
+plotted versus frequency.
 
 Usage:
     python run_basis_projection.py BASIS DATA
     python run_basis_projection.py basis.npy data.npy --output-dir results_projection
     python run_basis_projection.py basis.mat data.mat --basis-var H --data-var H
 
-The basis column space lives in C^ndof, so both matrices must share the same
-number of rows (ndof) and the same number of frequencies. The number of plane
-waves (columns) may differ.
+The basis column space lives in C^ndof, so the basis and data must share the
+same number of rows (ndof). The number of plane waves (columns) may differ.
 """
 
 import argparse
@@ -63,6 +64,17 @@ def load_matrix(path: str, var: str = None) -> np.ndarray:
     raise ValueError(
         f"unsupported file extension '{ext}' for {path}; expected .npy or .mat"
     )
+
+
+def squeeze_basis(basis: np.ndarray) -> np.ndarray:
+    """Coerce a basis array to 2D (ndof, npws).
+
+    The basis is frequency-independent. A trailing singleton frequency axis
+    (ndof, npws, 1) is squeezed for convenience; any other 3D shape is an error.
+    """
+    if basis.ndim == 3 and basis.shape[2] == 1:
+        return basis[:, :, 0]
+    return basis
 
 
 def resolve_frequencies(spec: str, nfreq: int) -> tuple:
@@ -118,13 +130,13 @@ def save_report(path: str, args, result: dict, frequencies: np.ndarray) -> None:
             "npws_data": int(result["npws_data"]),
             "nfreq": int(result["nfreq"]),
             "rtol": float(args.rtol),
+            "basis_rank": int(result["basis_rank"]),
         },
         "per_frequency": {
             "frequencies": [float(f) for f in frequencies],
             "relative_residual": [
                 float(v) if np.isfinite(v) else None for v in rel
             ],
-            "basis_rank": [int(r) for r in result["basis_rank"]],
         },
         "summary": summary,
     }
@@ -136,11 +148,9 @@ def save_csv(path: str, result: dict, frequencies: np.ndarray) -> None:
     """Write per-frequency residuals as CSV."""
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["frequency", "relative_residual", "basis_rank"])
-        for freq, res, rank in zip(
-            frequencies, result["relative_residual"], result["basis_rank"]
-        ):
-            writer.writerow([float(freq), float(res), int(rank)])
+        writer.writerow(["frequency", "relative_residual"])
+        for freq, res in zip(frequencies, result["relative_residual"]):
+            writer.writerow([float(freq), float(res)])
 
 
 def save_plot(path: str, result: dict, frequencies: np.ndarray,
@@ -178,11 +188,20 @@ Examples:
   python run_basis_projection.py basis.mat data.mat --basis-var H --data-var H \\
       --frequencies freqs.npy
 
-Both matrices must be 3D (ndof, npws, nfreq) and share ndof and nfreq.
+Basis is 2D (ndof, npws_basis); data is 3D (ndof, npws_data, nfreq) with the
+frequency on its third axis. The basis and data must share ndof.
         """,
     )
-    parser.add_argument("basis", help="Path to the basis matrix (.npy or .mat)")
-    parser.add_argument("data", help="Path to the data matrix (.npy or .mat)")
+    parser.add_argument(
+        "basis",
+        help="Path to the frequency-independent basis matrix, shape "
+             "(ndof, npws) (.npy or .mat)",
+    )
+    parser.add_argument(
+        "data",
+        help="Path to the per-frequency data matrix, shape "
+             "(ndof, npws, nfreq) (.npy or .mat)",
+    )
     parser.add_argument(
         "--output-dir", default="results_projection",
         help="Output directory (default: results_projection)",
@@ -226,7 +245,8 @@ Both matrices must be 3D (ndof, npws, nfreq) and share ndof and nfreq.
         print(f"Error loading inputs: {e}")
         sys.exit(1)
 
-    print(f"Basis matrix: {args.basis}  shape {basis.shape}")
+    basis = squeeze_basis(basis)
+    print(f"Basis matrix (frequency-independent): {args.basis}  shape {basis.shape}")
     print(f"Data matrix:  {args.data}  shape {data.shape}")
 
     # Compute
@@ -241,6 +261,7 @@ Both matrices must be 3D (ndof, npws, nfreq) and share ndof and nfreq.
     rel = result["relative_residual"]
     finite = rel[np.isfinite(rel)]
     print(f"Frequencies: {projector.nfreq}")
+    print(f"Basis numerical rank: {result['basis_rank']} (of {projector.npws_basis} columns)")
     if finite.size > 0:
         print(
             f"Relative residual: mean={np.mean(finite):.3e} "

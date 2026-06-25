@@ -25,7 +25,7 @@ Analyzes scattered pressure fields on structures (e.g., a cone) excited by diffu
 5. **Eigenvector Basis Validation** - Reconstruction-error and basis-dimension checks
 6. **POD Mode Export from Sideset** - Pair `_real`/`_imag` sideset variables into a complex `(n_faces, n_modes)` `.npy`
 7. **CPSD Inverse Problem** - Recover a POD-reduced CPSD from sparse experimental sensor CPSDs (and lift back to full space)
-8. **Basis-Projection Residual** - Project one transfer matrix (data) onto another's column space (basis) per frequency and report the relative approximation error
+8. **Basis-Projection Residual** - Project a per-frequency data transfer matrix onto a fixed (frequency-independent) basis column space and report the relative approximation error per frequency
 
 ## 1. Mesh Filtering
 
@@ -664,15 +664,15 @@ diag_S_full = solver.reconstruct_full_cpsd(S_r_f0, diagonal_only=True)
 
 ## 8. Basis-Projection Residual Analysis
 
-Given two transfer matrices of the same form as `data/Tmatrix_cone_only.npy` (shape `(ndof, npws, nfreq)`), one is treated as a **basis** and the other as **data**. At each frequency, the data columns are orthogonally projected onto the **column space** of the basis, and the relative residual of that best (least-squares) approximation is reported and plotted versus frequency. This answers: *how well can the basis's achievable pressure fields represent the data fields, frequency by frequency?*
+The **basis** is a single frequency-independent matrix `B` of shape `(ndof, npws_basis)`. The **data** is a per-frequency transfer matrix of the same form as `data/Tmatrix_cone_only.npy`, shape `(ndof, npws_data, nfreq)` — the frequency dimension is the third axis of the data. At each frequency, the data columns are orthogonally projected onto the **column space** of the basis, and the relative residual of that best (least-squares) approximation is reported and plotted versus frequency. This answers: *how well can the basis's achievable pressure fields represent the data fields, frequency by frequency?*
 
-For each frequency `i` with `B = basis[:, :, i]` and `D = data[:, :, i]`:
+The basis column space does not change with frequency, so its orthonormalization is computed once. With `D = data[:, :, i]` at frequency `i`:
 
-- Orthonormalize the basis columns via thin SVD, keeping columns with singular value `s > rtol·s[0]` (numerical rank), giving an orthonormal `Q`.
+- Orthonormalize the basis columns via thin SVD, keeping columns with singular value `s > rtol·s[0]` (numerical rank), giving an orthonormal `Q` (computed once).
 - Best approximation: `D_hat = Q (Q^h D)` (orthogonal projection onto `col(B)`).
 - Relative residual: `||D − D_hat||_F / ||D||_F`.
 
-The basis column space lives in `C^ndof`, so both matrices must share the same `ndof` (rows) and the same number of frequencies; the number of plane waves (columns) may differ.
+The basis column space lives in `C^ndof`, so the basis and data must share the same `ndof` (rows); the number of plane waves (columns) may differ. A basis stored as `(ndof, npws, 1)` is squeezed to 2D automatically.
 
 ### Usage
 
@@ -692,8 +692,8 @@ python run_basis_projection.py basis.mat data.mat --basis-var H --data-var H
 
 | Option | Description |
 |--------|-------------|
-| `basis` | Path to the basis matrix (`.npy` or `.mat`), positional |
-| `data` | Path to the data matrix (`.npy` or `.mat`), positional |
+| `basis` | Path to the frequency-independent basis matrix `(ndof, npws)` (`.npy` or `.mat`), positional |
+| `data` | Path to the per-frequency data matrix `(ndof, npws, nfreq)` (`.npy` or `.mat`), positional |
 | `--output-dir` | Output directory (default: `results_projection`) |
 | `--basis-var` | Variable name inside a `.mat` basis file (auto-detected if single variable) |
 | `--data-var` | Variable name inside a `.mat` data file (auto-detected if single variable) |
@@ -706,15 +706,15 @@ python run_basis_projection.py basis.mat data.mat --basis-var H --data-var H
 
 ```
 results_projection/
-├── projection_report.json              # Metadata, per-frequency residuals/ranks, summary stats
-├── relative_residual.csv               # frequency, relative_residual, basis_rank
+├── projection_report.json              # Metadata, per-frequency residuals, summary stats
+├── relative_residual.csv               # frequency, relative_residual
 └── relative_residual_vs_frequency.png  # Relative residual vs frequency plot
 ```
 
 `projection_report.json` contains:
 
-- `metadata`: basis/data paths, `ndof`, `npws_basis`, `npws_data`, `nfreq`, `rtol`
-- `per_frequency`: `frequencies`, `relative_residual` (null where `||D||_F = 0`), `basis_rank`
+- `metadata`: basis/data paths, `ndof`, `npws_basis`, `npws_data`, `nfreq`, `rtol`, and `basis_rank` (a single integer, since the basis is frequency-independent)
+- `per_frequency`: `frequencies`, `relative_residual` (null where `||D||_F = 0`)
 - `summary`: mean / min / max relative residual, and the worst frequency
 
 ### Programmatic Usage
@@ -723,15 +723,15 @@ results_projection/
 from basis_projector import BasisProjection
 import numpy as np
 
-basis = np.load("basis.npy")   # (ndof, npws_basis, nfreq)
-data  = np.load("data.npy")    # (ndof, npws_data,  nfreq)
+basis = np.load("basis.npy")   # (ndof, npws_basis)        frequency-independent
+data  = np.load("data.npy")    # (ndof, npws_data, nfreq)  frequency on third axis
 
 result = BasisProjection(basis, data, rtol=1e-12).project()
 result["relative_residual"]    # (nfreq,) ||D - D_hat||_F / ||D||_F
-result["basis_rank"]           # (nfreq,) numerical rank of the basis
+result["basis_rank"]           # int, numerical rank of the (fixed) basis
 ```
 
-**Note**: column-space projection requires matching `ndof`. The two shipped matrices `data/Tmatrix.npy` (3206 rows) and `data/Tmatrix_cone_only.npy` (2701 rows) have different `ndof` and so cannot be cross-projected directly; the tool raises a clear `ValueError` for mismatched rows or frequencies.
+**Note**: column-space projection requires matching `ndof`. A basis and data with different numbers of rows cannot be projected; the tool raises a clear `ValueError` (likewise if the basis is not 2D or the data is not 3D).
 
 ## Typical Workflow
 

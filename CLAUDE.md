@@ -52,15 +52,15 @@ No build step or package manager required. Dependencies: NumPy, SciPy, Matplotli
 **cone_visualizer.py** - `ConeVisualizer` class for 3D plots of pressure fields and eigenvalue decay on cone surfaces.
 
 **basis_projector.py** - `BasisProjection` class for per-frequency basis-projection residual:
-- Takes two transfer matrices of shape `(ndof, npws, nfreq)`: one "basis", one "data"
-- At each frequency, orthonormalizes the basis columns via thin SVD (truncated at numerical rank `s > rtol*s[0]`) and orthogonally projects the data columns onto the basis column space: `D_hat = Q @ (Q^H @ D)`
-- Reports the relative residual `||D - D_hat||_F / ||D||_F` per frequency, plus basis rank and data norm
-- Basis and data must share `ndof` (rows) and `nfreq`; `npws` (columns) may differ
+- Takes a frequency-independent basis `(ndof, npws_basis)` and a per-frequency data matrix `(ndof, npws_data, nfreq)` (frequency is the data's third axis)
+- Orthonormalizes the basis columns once via thin SVD (truncated at numerical rank `s > rtol*s[0]`); at each data frequency orthogonally projects the data columns onto the basis column space: `D_hat = Q @ (Q^H @ D)`
+- Reports the relative residual `||D - D_hat||_F / ||D||_F` per frequency, plus the (scalar) basis rank and per-frequency data norm
+- Basis and data must share `ndof` (rows); `npws` (columns) may differ
 
 **run_basis_projection.py** - CLI driver for basis-projection analysis:
-- Positional args `BASIS DATA` (`.npy` or `.mat`; for `.mat`, variable via `--basis-var`/`--data-var`, auto-detected when a single variable is present)
+- Positional args `BASIS DATA` (`.npy` or `.mat`; for `.mat`, variable via `--basis-var`/`--data-var`, auto-detected when a single variable is present). A basis stored as `(ndof, npws, 1)` is squeezed to 2D.
 - Options: `--output-dir`, `--rtol`, `--frequencies` (1-D `.npy` path or comma list to label the x-axis in Hz; defaults to frequency index), `--figure-format`, `--no-plots`
-- Outputs `projection_report.json` (metadata + per-frequency residuals/ranks + summary stats), `relative_residual.csv`, and a `relative_residual_vs_frequency.{fmt}` plot
+- Outputs `projection_report.json` (metadata incl. basis rank + per-frequency residuals + summary stats), `relative_residual.csv`, and a `relative_residual_vs_frequency.{fmt}` plot
 - Usage: `python run_basis_projection.py basis.npy data.npy --output-dir results_projection`
 
 ## Key Physics
