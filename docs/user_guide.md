@@ -632,6 +632,7 @@ The output `.npy` is accompanied by a sidecar `.json` with the frequencies (if k
 - `"lines"` — per-location autopower `S_ii(f)` vs frequency. With a validation set, the inverse solution is solid and the validation data dashed, sharing one colour per location (solution-only without one).
 - `"box"` — at each frequency, the distribution of `S_ii(f)` across the selected locations as side-by-side solution/validation boxes (IQR box, 5th/95th-percentile whiskers); switches to median + percentile bands above 40 frequencies. *Requires validation.*
 - `"error"` — per-location relative-L2 error of the solution vs validation autopower spectrum, `‖S_ii^sol − S_ii^val‖₂ / ‖S_ii^val‖₂`, as a bar chart sorted worst → best (optional `output.top_n` cap). Ranks which sensors the inversion reproduces best/worst. *Requires validation.*
+- `"validation_db"` — decibel comparison as a stacked two-panel figure. **Top:** the level `L = 10·log10(S_ii / db_ref)` in dB for the **computed** (solid) and **measured** (dashed) spectra. **Bottom:** the signed level error `ΔL = 10·log10(S_meas / S_comp)` per location (reference cancels, so none is needed), with a highlight box reporting `max|ΔL|` and `median|ΔL|`. A combined "all sensors" figure is written to `output.figure_path`; individual per-sensor figures go to a `per_sensor/` subdirectory (`output.per_sensor`, worst-first capped by `output.top_n`). Terminology follows the measured/computed convention. *Requires validation.*
 
 ```bash
 python run_plot_cpsd_diagonal.py config_plot_cpsd_diagonal.json

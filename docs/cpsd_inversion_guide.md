@@ -75,7 +75,7 @@ implementation notes on the solver class.
 | 2 | `run_cpsd_inverse.py` | `config_cpsd_inverse.json` | `cpsd_inverse_freq*.npz`, `summary.json` |
 | 3 | `run_reconstruct_full_cpsd.py` | `config_reconstruct_full_cpsd.json` | `full_cpsd_diag.npy` (+ `.json` sidecar) |
 | 4 | `run_diagonal_to_exodus.py` | `config_diagonal_to_exodus.json` | exodus file with `cpsd_diag` sideset variable |
-| 5 | `run_plot_cpsd_diagonal.py` | `config_plot_cpsd_diagonal.json` | `diagonal_vs_frequency[_lines/_box/_error].png` (+ optional `.csv`); solution-vs-validation overlay & per-location error |
+| 5 | `run_plot_cpsd_diagonal.py` | `config_plot_cpsd_diagonal.json` | `diagonal_vs_frequency[_lines/_box/_error/_validation_db].png` (+ optional `.csv`, + `per_sensor/` for `validation_db`); solution-vs-validation overlay, per-location error, and measured-vs-computed dB comparison |
 
 Steps 4 and 5 are post-processing siblings; both consume the diagonal
 `.npy` and its sidecar from Step 3 and they can be run independently.
@@ -622,7 +622,7 @@ of frequency. Entries are picked either by direct index into the
 sideset-face dimension or by physical `(x, y, z)` coordinate; the latter
 resolves to the nearest sideset face centroid.
 
-Three **plot kinds** are available, selected by `plot.kind` (a string or a
+Four **plot kinds** are available, selected by `plot.kind` (a string or a
 list of strings):
 
 | `plot.kind` | What it shows | Needs validation? |
@@ -630,9 +630,15 @@ list of strings):
 | `"lines"` | Per-location autopower `S_ii(f)` vs frequency. With a validation set, the inverse solution is drawn **solid** and the validation data **dashed**, sharing one colour per location. | No (overlay added if present) |
 | `"box"` | At each frequency, the distribution of `S_ii(f)` **across the selected locations** as side-by-side boxes (solution vs validation). Box = 25–75th percentile, whiskers = 5th/95th. Above `BAND_FREQ_THRESHOLD` (40) frequencies it auto-switches to median + shaded percentile bands. | Yes |
 | `"error"` | Per-location relative-L2 error of the solution autopower spectrum against the validation spectrum, `‖Sᵢᵢˢᵒˡ − Sᵢᵢᵛᵃˡ‖₂ / ‖Sᵢᵢᵛᵃˡ‖₂`, as a bar chart sorted worst → best. Use it to rank which sensors the inversion reproduces best/worst. | Yes |
+| `"validation_db"` | Stacked two-panel **decibel** comparison. *Top:* level `L = 10·log10(Sᵢᵢ / db_ref)` in dB, **computed** (solid) vs **measured** (dashed); colour = sensor, with the per-sensor legend shown only for ≤ `COMBINED_LEGEND_MAX` (10) sensors. *Bottom:* signed level error `ΔL = 10·log10(S_meas / S_comp)` per location, with a highlight box giving `max\|ΔL\|` and `median\|ΔL\|` (the dB reference cancels in `ΔL`, so it needs none). Emits a combined "all sensors" figure **and** per-sensor figures. | Yes |
 
-Passing a list (e.g. `["lines", "box", "error"]`) produces all of them in
-one run; see the output-naming note below.
+Passing a list (e.g. `["lines", "box", "error", "validation_db"]`) produces
+all of them in one run; see the output-naming note below.
+
+The `validation_db` kind uses the **measured/computed** vocabulary
+throughout (measured = validation, computed = inverse solution), matching
+the sign of `ΔL = S_meas − S_comp` in dB: `ΔL > 0` means the inversion
+under-predicts that bin.
 
 ### Comparing against validation data
 
@@ -654,8 +660,9 @@ driver extracts its real diagonal, then aligns it to the solution:
   sidecar's `freq_indices` to match the reconstructed subset. So
   `n_freq_full` must be ≥ `max(freq_indices) + 1`.
 
-The `box` and `error` kinds require a validation set; `lines` works with
-or without one (without it, the original solution-only line plot).
+The `box`, `error`, and `validation_db` kinds require a validation set;
+`lines` works with or without one (without it, the original solution-only
+line plot).
 
 **Driver:** [`src/run_plot_cpsd_diagonal.py`](../src/run_plot_cpsd_diagonal.py)
 **Config:** [`config_plot_cpsd_diagonal.json`](../config_plot_cpsd_diagonal.json)
@@ -682,21 +689,24 @@ python src/run_plot_cpsd_diagonal.py config_plot_cpsd_diagonal.json
     "match_tolerance": null
   },
   "plot": {
-    "kind":      ["lines", "box", "error"],
+    "kind":      ["lines", "box", "error", "validation_db"],
     "log_scale": true,
     "title":     "CPSD diagonal vs frequency",
     "ylabel":    "S_ii",
     "xlabel":    null,
     "figsize":   [9, 5],
     "ylim":      null,
-    "xlim":      null
+    "xlim":      null,
+    "db_ref":    1.0,
+    "db_floor":  1e-12
   },
   "output": {
     "figure_path":        "results_cpsd_inverse/diagonal_vs_frequency.png",
     "figure_format":      "png",
     "dpi":                150,
     "save_selection_csv": false,
-    "top_n":              null
+    "top_n":              null,
+    "per_sensor":         true
   }
 }
 ```
@@ -706,19 +716,22 @@ python src/run_plot_cpsd_diagonal.py config_plot_cpsd_diagonal.json
 | `input.diagonal_npy_path` | Real `(N, n_freq)` `.npy` from Step 3 (the inverse solution). |
 | `input.sidecar_json_path` | Optional; defaults to the `.json` sibling. Frequencies in the sidecar become the x-axis (else the index is used). Its `freq_indices` also slice the validation set. |
 | `input.exodus_file` / `input.sideset_id` | **Required if `selection.coordinates` is provided** (i.e. always, when a validation set is used) — used to compute centroids. |
-| `input.validation_path` | Optional `.npy`/`.mat` holding the validation full CPSD `(n_loc, n_loc, n_freq_full)`, complex. Enables the solution-vs-data overlay and is **required** for `box`/`error`. |
+| `input.validation_path` | Optional `.npy`/`.mat` holding the validation full CPSD `(n_loc, n_loc, n_freq_full)`, complex. Enables the solution-vs-data overlay and is **required** for `box`/`error`/`validation_db`. |
 | `input.validation_var` | Variable name inside the `.mat`; **required** for `.mat`, ignored for `.npy`. |
 | `selection.indices` | List of non-negative ints, or `"all"` to plot every entry. Allowed only when no validation set is given. |
 | `selection.coordinates` | List of `[x, y, z]` triples; each maps to the nearest sideset face centroid. **Required when a validation set is given** (row-by-row alignment). |
 | `selection.match_tolerance` | Optional positive number; if set, a coordinate whose nearest centroid is farther than this raises an error (guards against misregistered validation coordinates). `null` ⇒ informational distance print only. |
-| `plot.kind` | One of `"lines"`, `"box"`, `"error"`, or a list of them. Default `"lines"`. |
-| `plot.log_scale` | `true` ⇒ log y-axis for `lines` and `box`. The `error` bar chart is always linear. |
-| `plot.title` / `ylabel` / `xlabel` | Standard labels; `xlabel: null` auto-fills from the sidecar. |
-| `plot.figsize` | `[width, height]` in inches. |
-| `plot.ylim` / `xlim` | Optional `[min, max]` pair (must have `min < max`); use this to zoom into a frequency band. |
-| `output.figure_path` | Parent directories created automatically; `figure_format` is added if no suffix is present. When multiple kinds run, a `_lines`/`_box`/`_error` suffix is inserted into the stem (single-kind runs keep the bare path). |
-| `output.save_selection_csv` | When `true`, writes a sibling `.csv` per kind: `lines` ⇒ one column per selected index (solution, and validation if present); `box` ⇒ per-frequency percentiles (5/25/50/75/95) for both series; `error` ⇒ ranked per-location errors. |
-| `output.top_n` | Optional positive int; for the `error` kind, show only the worst `N` locations. `null` ⇒ all. |
+| `plot.kind` | One of `"lines"`, `"box"`, `"error"`, `"validation_db"`, or a list of them. Default `"lines"`. |
+| `plot.log_scale` | `true` ⇒ log y-axis for `lines` and `box`. The `error` bar chart is always linear; `validation_db` is always in dB and ignores this flag. |
+| `plot.title` / `ylabel` / `xlabel` | Standard labels; `xlabel: null` auto-fills from the sidecar. For `validation_db` the top-panel y-label becomes `"{ylabel} level [dB re {db_ref}]"`. |
+| `plot.figsize` | `[width, height]` in inches. For `validation_db` (two stacked panels), a taller figure such as `[10, 7]` reads better. |
+| `plot.ylim` / `xlim` | Optional `[min, max]` pair (must have `min < max`); use this to zoom into a frequency band. For `validation_db`, `ylim` applies to the top (dB level) panel. |
+| `plot.db_ref` | `validation_db` only. Positive reference in `L = 10·log10(Sᵢᵢ / db_ref)`. Default `1.0` (dB re 1 unit²/Hz); set to `(20e-6)**2` if the data is genuinely Pa²/Hz. The reference **cancels** in the `ΔL` error panel. |
+| `plot.db_floor` | `validation_db` only. Positive relative floor: each location is clamped to `db_floor × (that location's peak)` before the log, so a vanishing/negative `Sᵢᵢ` yields a bounded level instead of `−inf`. Default `1e-12` (≈ −120 dB below peak). Clamped-sample counts are logged. |
+| `output.figure_path` | Parent directories created automatically; `figure_format` is added if no suffix is present. When multiple kinds run, a `_lines`/`_box`/`_error`/`_validation_db` suffix is inserted into the stem (single-kind runs keep the bare path). For `validation_db` this path is the combined "all sensors" figure. |
+| `output.save_selection_csv` | When `true`, writes a sibling `.csv` per kind: `lines` ⇒ one column per selected index (solution, and validation if present); `box` ⇒ per-frequency percentiles (5/25/50/75/95) for both series; `error` ⇒ ranked per-location errors; `validation_db` ⇒ per-frequency `Lcomp`/`Lmeas`/`ΔL` columns plus a `*_error_stats.csv` with per-sensor and pooled `max\|ΔL\|` / `median\|ΔL\|`. |
+| `output.top_n` | Optional positive int. For `error`, show only the worst `N` locations. For `validation_db`, cap the number of **per-sensor** figures written (worst-error first); the skipped count is logged. `null` ⇒ all. |
+| `output.per_sensor` | `validation_db` only. When `true` (default), also write one two-panel figure per selected sensor to a `per_sensor/` subdirectory beside `figure_path`, named `sensor_<faceidx>.<fmt>`. Set `false` to emit only the combined figure. |
 
 ### Coordinate → row resolution
 
@@ -860,11 +873,14 @@ resolved sideset-face index. The stdout will show, for each coordinate,
 the snapped centroid and Euclidean distance — `d ≈ 0.075` for the first
 target, `d ≈ 0.225` for the second.
 
-To exercise the validation overlay and the `box`/`error` kinds, drop the
-`indices`, keep `coordinates` only (so `n_loc` matches the coordinate
-count), point `input.validation_path` at a `(n_loc, n_loc, n_freq_full)`
-array, and set `"kind": ["lines", "box", "error"]`. The run then writes
-`diagonal_vs_frequency_lines.png`, `_box.png`, and `_error.png`.
+To exercise the validation overlay and the `box`/`error`/`validation_db`
+kinds, drop the `indices`, keep `coordinates` only (so `n_loc` matches the
+coordinate count), point `input.validation_path` at a
+`(n_loc, n_loc, n_freq_full)` array, and set
+`"kind": ["lines", "box", "error", "validation_db"]`. The run then writes
+`diagonal_vs_frequency_lines.png`, `_box.png`, `_error.png`, and
+`_validation_db.png`, the latter accompanied by per-sensor figures under
+`results_cpsd_inverse/per_sensor/sensor_<faceidx>.png`.
 
 ### 9.5 Tear-down
 
@@ -894,7 +910,7 @@ rm -rf results/sideset_pod_modes.npy results_cpsd_inverse/ data/cube_diag.e
 | `*_diag.json` sidecar | frequencies, mode, dtype, paths | Step 3 | Steps 4, 5 |
 | Exodus with `cpsd_diag` var | sideset variable, one step per freq | Step 4 | ParaView/Cubit |
 | validation CPSD (`.npy`/`.mat`) | `(n_loc, n_loc, n_freq_full)` complex | upstream | Step 5 (optional) |
-| `diagonal_vs_frequency[_lines/_box/_error].png` (+ optional `.csv`) | plot | Step 5 | engineer |
+| `diagonal_vs_frequency[_lines/_box/_error/_validation_db].png` (+ optional `.csv`, + `per_sensor/sensor_<faceidx>.png` for `validation_db`) | plot | Step 5 | engineer |
 
 ---
 

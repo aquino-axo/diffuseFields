@@ -22,10 +22,19 @@ Three plot kinds are supported via `plot.kind` (a string or a list):
   * ``"error"`` - per-location relative-L2 error of the solution autopower
     spectrum against the validation spectrum, sorted worst -> best as a bar
     chart. ``output.top_n`` optionally caps the number of bars.
+  * ``"validation_db"`` - stacked two-panel dB comparison. The top panel shows
+    the autopower level ``L = 10*log10(S_ii / db_ref)`` for the computed
+    (solid) and measured (dashed) spectra; the bottom panel shows the signed
+    level error ``dL = 10*log10(S_meas / S_comp)`` per location with a
+    highlight box reporting ``max|dL|`` and ``median|dL|`` (the reference
+    cancels in the error, so it needs none). A combined "all sensors" figure
+    is written to ``output.figure_path``; per-sensor figures go to a
+    ``per_sensor/`` subdirectory (``output.per_sensor``), capped worst-first
+    by ``output.top_n``.
 
-The ``box`` and ``error`` kinds require a validation file. A validation file
-requires the selection to be given as ``coordinates`` (validation row k is
-aligned to the k-th coordinate).
+The ``box``, ``error`` and ``validation_db`` kinds require a validation file.
+A validation file requires the selection to be given as ``coordinates``
+(validation row k is aligned to the k-th coordinate).
 
 Usage:
     python run_plot_cpsd_diagonal.py config_plot_cpsd_diagonal.json
@@ -46,7 +55,12 @@ from scipy.io import loadmat
 # of discrete side-by-side boxes (which would be unreadable).
 BAND_FREQ_THRESHOLD = 40
 
-VALID_KINDS = ('lines', 'box', 'error')
+VALID_KINDS = ('lines', 'box', 'error', 'validation_db')
+
+# On the combined validation_db overlay, show the per-sensor colour legend only
+# when the sensor count is at or below this; above it, only the computed/
+# measured linestyle key is drawn (colours still convey spread).
+COMBINED_LEGEND_MAX = 10
 
 # Imported lazily (and patchable in tests) so the module loads without the
 # optional `exodusii` dependency when coordinate selection is not used.
@@ -90,6 +104,8 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
             'figsize': [9, 5],
             'ylim': None,
             'xlim': None,
+            'db_ref': 1.0,
+            'db_floor': 1e-12,
         },
         'output': {
             'figure_path': 'results_cpsd_inverse/diagonal_vs_frequency.png',
@@ -97,6 +113,7 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
             'dpi': 150,
             'save_selection_csv': False,
             'top_n': None,
+            'per_sensor': True,
         },
     }
     for section, section_defaults in defaults.items():
@@ -158,7 +175,8 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
             )
     config['plot']['kind'] = kinds  # normalise to list
 
-    needs_validation = [k for k in kinds if k in ('box', 'error')]
+    needs_validation = [k for k in kinds if k in ('box', 'error',
+                                                   'validation_db')]
     if needs_validation and not has_validation:
         raise ValueError(
             f"plot kinds {needs_validation} require input.validation_path"
@@ -178,6 +196,12 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
             raise ValueError(
                 f"plot.{key} must be null or a [min, max] pair with min < max"
             )
+
+    for key in ('db_ref', 'db_floor'):
+        val = plot_cfg.get(key)
+        if not isinstance(val, (int, float)) or isinstance(val, bool) \
+                or val <= 0:
+            raise ValueError(f"plot.{key} must be a positive number")
 
     out_cfg = config['output']
     if out_cfg['top_n'] is not None:
@@ -658,6 +682,232 @@ def plot_error(
         print(f"Saved CSV to {csv_path}")
 
 
+# --------------------------------------------------------------------------
+# validation_db: dB overlay + signed level-error, combined and per-sensor
+# --------------------------------------------------------------------------
+
+def to_db(values: np.ndarray, ref: float, floor_rel: float
+          ) -> Tuple[np.ndarray, int]:
+    """
+    Convert power values ``(n_loc, n_freq)`` to level ``10*log10(S/ref)`` in dB.
+
+    Each location (row) is floored at ``floor_rel * row_peak`` before the log
+    so that non-positive or vanishing entries yield a finite, bounded-below
+    level instead of ``-inf``. Returns the levels and the number of samples
+    that hit the floor.
+    """
+    values = np.asarray(values, dtype=float)
+    peaks = np.max(values, axis=1, keepdims=True)
+    floors = np.maximum(floor_rel * peaks, np.finfo(float).tiny)
+    n_clamped = int(np.count_nonzero(values < floors))
+    clamped = np.maximum(values, floors)
+    return 10.0 * np.log10(clamped / ref), n_clamped
+
+
+def db_error(meas: np.ndarray, comp: np.ndarray, floor_rel: float
+             ) -> Tuple[np.ndarray, int]:
+    """
+    Signed level error ``dL = 10*log10(S_meas / S_comp)`` in dB, i.e.
+    ``10*log10(S_meas) - 10*log10(S_comp)``. The reference cancels, so this is
+    computed with ref = 1. Both operands are floored as in :func:`to_db`.
+    Returns the error and the total number of floored samples.
+    """
+    l_meas, n1 = to_db(meas, 1.0, floor_rel)
+    l_comp, n2 = to_db(comp, 1.0, floor_rel)
+    return l_meas - l_comp, n1 + n2
+
+
+def db_error_stats(dL: np.ndarray) -> Tuple[float, float]:
+    """``(max|dL|, median|dL|)`` over all samples of ``dL`` (pooled)."""
+    a = np.abs(np.asarray(dL, dtype=float))
+    return float(np.max(a)), float(np.median(a))
+
+
+def select_per_sensor_order(dL_all: np.ndarray, top_n: Optional[int]
+                            ) -> Tuple[np.ndarray, int]:
+    """
+    Order sensors worst-error first by per-sensor ``max|dL|`` and apply the
+    ``top_n`` cap. Returns the (possibly truncated) index order and the number
+    of sensors skipped by the cap.
+    """
+    per_sensor_max = np.max(np.abs(dL_all), axis=1)
+    order = np.argsort(per_sensor_max)[::-1]
+    n_total = len(order)
+    if top_n is not None and top_n < n_total:
+        return order[:top_n], n_total - top_n
+    return order, 0
+
+
+def _render_db_figure(
+    sol: np.ndarray,
+    val: np.ndarray,
+    freq_axis: np.ndarray,
+    selection: List[Tuple[int, str]],
+    xlabel: str,
+    plot_cfg: Dict[str, Any],
+    title: str,
+    show_sensor_legend: bool,
+    single_sensor: bool = False,
+):
+    """
+    Draw a stacked overlay (top) + signed dB error (bottom) figure.
+
+    Returns ``(fig, (max_abs, median_abs), n_clamped)``.
+    """
+    db_ref = plot_cfg['db_ref']
+    db_floor = plot_cfg['db_floor']
+    l_comp, nc1 = to_db(sol, db_ref, db_floor)
+    l_meas, nc2 = to_db(val, db_ref, db_floor)
+    dL, _ = db_error(val, sol, db_floor)
+    max_abs, med_abs = db_error_stats(dL)
+
+    prop_cycle = plt.rcParams['axes.prop_cycle'].by_key().get('color', None)
+    fig, (ax_top, ax_err) = plt.subplots(
+        2, 1, sharex=True, figsize=tuple(plot_cfg['figsize'])
+    )
+
+    if single_sensor:
+        # One sensor: distinguish source by colour and linestyle.
+        ax_top.plot(freq_axis, l_comp[0], '-', color='tab:blue',
+                    label='computed')
+        ax_top.plot(freq_axis, l_meas[0], '--', color='tab:orange',
+                    label='measured')
+        ax_err.plot(freq_axis, dL[0], '-', color='tab:red')
+    else:
+        # Many sensors: colour = sensor, linestyle = source.
+        for k, (idx, label) in enumerate(selection):
+            color = prop_cycle[k % len(prop_cycle)] if prop_cycle else None
+            ax_top.plot(freq_axis, l_comp[k], '-', color=color,
+                        label=(label if show_sensor_legend else None))
+            ax_top.plot(freq_axis, l_meas[k], '--', color=color)
+            ax_err.plot(freq_axis, dL[k], '-', color=color)
+        # Linestyle key independent of the per-sensor colour legend.
+        ax_top.plot([], [], 'k-', label='computed')
+        ax_top.plot([], [], 'k--', label='measured')
+
+    ax_top.set_ylabel(f"{plot_cfg['ylabel']} level [dB re {db_ref:g}]")
+    ax_top.set_title(title)
+    ax_top.grid(True, alpha=0.3)
+    ax_top.legend(loc='best', fontsize=8)
+    if plot_cfg['ylim'] is not None:
+        ax_top.set_ylim(plot_cfg['ylim'])
+
+    ax_err.axhline(0.0, color='k', lw=0.8, alpha=0.6)
+    ax_err.set_xlabel(plot_cfg['xlabel'] or xlabel)
+    ax_err.set_ylabel(r'$S_{ii}$ error (measured $-$ computed) [dB]')
+    ax_err.grid(True, alpha=0.3)
+    if plot_cfg['xlim'] is not None:
+        ax_err.set_xlim(plot_cfg['xlim'])
+    box_text = (f"max |error| = {max_abs:.2f} dB\n"
+                f"median |error| = {med_abs:.2f} dB")
+    ax_err.text(0.98, 0.95, box_text, transform=ax_err.transAxes,
+                ha='right', va='top', fontsize=9,
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.85))
+
+    fig.tight_layout()
+    return fig, (max_abs, med_abs), nc1 + nc2
+
+
+def _save_db_csv(
+    fig_path: Path,
+    freq_axis: np.ndarray,
+    xlabel: str,
+    selection: List[Tuple[int, str]],
+    sol_sel: np.ndarray,
+    val_sel: np.ndarray,
+    plot_cfg: Dict[str, Any],
+) -> None:
+    """Write per-frequency dB columns and a per-sensor + pooled error summary."""
+    db_ref = plot_cfg['db_ref']
+    db_floor = plot_cfg['db_floor']
+    l_comp, _ = to_db(sol_sel, db_ref, db_floor)
+    l_meas, _ = to_db(val_sel, db_ref, db_floor)
+    dL, _ = db_error(val_sel, sol_sel, db_floor)
+
+    csv_path = fig_path.with_suffix('.csv')
+    with open(csv_path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        header = [xlabel]
+        for idx, _ in selection:
+            header += [f'Lcomp_idx_{idx}', f'Lmeas_idx_{idx}', f'dL_idx_{idx}']
+        writer.writerow(header)
+        for j, freq in enumerate(freq_axis):
+            row = [float(freq)]
+            for k in range(len(selection)):
+                row += [float(l_comp[k, j]), float(l_meas[k, j]),
+                        float(dL[k, j])]
+            writer.writerow(row)
+    print(f"Saved CSV to {csv_path}")
+
+    stats_path = fig_path.with_name(f"{fig_path.stem}_error_stats.csv")
+    abs_dL = np.abs(dL)
+    per_max = np.max(abs_dL, axis=1)
+    per_med = np.median(abs_dL, axis=1)
+    with open(stats_path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['face_index', 'max_abs_dB', 'median_abs_dB'])
+        for k, (idx, _) in enumerate(selection):
+            writer.writerow([int(idx), float(per_max[k]), float(per_med[k])])
+        writer.writerow(['POOLED', float(np.max(abs_dL)),
+                         float(np.median(abs_dL))])
+    print(f"Saved error summary to {stats_path}")
+
+
+def plot_validation_db(
+    sol_sel: np.ndarray,
+    val_sel: np.ndarray,
+    freq_axis: np.ndarray,
+    selection: List[Tuple[int, str]],
+    xlabel: str,
+    config: Dict[str, Any],
+    fig_path: Path,
+) -> None:
+    """Combined + per-sensor dB overlay/error figures (measured vs computed)."""
+    plot_cfg = config['plot']
+    out_cfg = config['output']
+    db_floor = plot_cfg['db_floor']
+
+    # --- combined "all sensors" two-panel figure --------------------------
+    fig, (max_abs, med_abs), n_clamped = _render_db_figure(
+        sol_sel, val_sel, freq_axis, selection, xlabel, plot_cfg,
+        title=plot_cfg['title'],
+        show_sensor_legend=(len(selection) <= COMBINED_LEGEND_MAX),
+    )
+    if n_clamped:
+        print(f"  db: clamped {n_clamped} non-positive/near-zero S_ii "
+              f"sample(s) to the relative floor (plot.db_floor={db_floor:g})")
+    print(f"  combined dB error (pooled): max|dL|={max_abs:.3f} dB, "
+          f"median|dL|={med_abs:.3f} dB")
+    _save_fig(fig, fig_path, out_cfg['dpi'])
+
+    if out_cfg['save_selection_csv']:
+        _save_db_csv(fig_path, freq_axis, xlabel, selection, sol_sel, val_sel,
+                     plot_cfg)
+
+    # --- per-sensor two-panel figures -------------------------------------
+    if not out_cfg['per_sensor']:
+        return
+    dL_all, _ = db_error(val_sel, sol_sel, db_floor)
+    order, n_skipped = select_per_sensor_order(dL_all, out_cfg['top_n'])
+    if n_skipped:
+        print(f"  per-sensor: writing worst {len(order)} of "
+              f"{len(order) + n_skipped} figures (output.top_n); "
+              f"skipped {n_skipped}")
+    subdir = fig_path.parent / 'per_sensor'
+    for k in order:
+        idx = selection[k][0]
+        sub_path = subdir / f"sensor_{idx}{fig_path.suffix}"
+        fig_k, _stats, _nc = _render_db_figure(
+            sol_sel[k:k + 1], val_sel[k:k + 1], freq_axis, [selection[k]],
+            xlabel, plot_cfg,
+            title=f"Sensor {idx}: measured vs computed",
+            show_sensor_legend=False, single_sensor=True,
+        )
+        _save_fig(fig_k, sub_path, out_cfg['dpi'])
+    if len(order):
+        print(f"  wrote {len(order)} per-sensor figure(s) to {subdir}")
+
+
 def run(config: Dict[str, Any]) -> None:
     inp = config['input']
     kinds = config['plot']['kind']
@@ -712,6 +962,9 @@ def run(config: Dict[str, Any]) -> None:
             plot_box(sol_sel, val_sel, freq_axis, xlabel, config, fig_path)
         elif kind == 'error':
             plot_error(sol_sel, val_sel, selection, config, fig_path)
+        elif kind == 'validation_db':
+            plot_validation_db(sol_sel, val_sel, freq_axis, selection, xlabel,
+                               config, fig_path)
 
 
 def main():

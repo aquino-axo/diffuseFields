@@ -28,9 +28,14 @@ import run_plot_cpsd_diagonal as rp
 from run_plot_cpsd_diagonal import (
     BAND_FREQ_THRESHOLD,
     box_render_mode,
+    db_error,
+    db_error_stats,
     load_validation_diagonal,
+    plot_validation_db,
     relative_l2_error,
     resolve_selection,
+    select_per_sensor_order,
+    to_db,
     validate_config,
 )
 
@@ -276,6 +281,146 @@ def test_config_validation(tmp_path=None):
     print("  ok")
 
 
+def test_db_conversion_and_floor():
+    """to_db matches 10log10(S/ref); non-positive samples floored, counted."""
+    print("Test 6: dB conversion + relative floor...")
+    S = np.array([[100.0, 10.0, 1.0, 0.0, -5.0]])  # row peak = 100
+    floor_rel = 1e-3  # floor = 0.1 -> 10log10(0.1) = -10 dB
+    L, n_clamped = to_db(S, ref=1.0, floor_rel=floor_rel)
+    assert np.allclose(L[0, :3], [20.0, 10.0, 0.0]), L
+    assert np.allclose(L[0, 3:], [-10.0, -10.0]), L  # 0.0 and -5.0 -> floor
+    assert n_clamped == 2
+    assert np.all(np.isfinite(L))  # never -inf
+
+    # Reference scaling shifts every level by -10log10(ref).
+    L10, _ = to_db(S, ref=10.0, floor_rel=floor_rel)
+    assert np.allclose(L10, L - 10.0)
+    print("  ok")
+
+
+def test_signed_db_error():
+    """dL = 10log10(S_meas/S_comp) = level(meas) - level(comp), signed."""
+    print("Test 7: signed dB error...")
+    comp = np.array([[1.0, 2.0, 4.0]])
+    meas = np.array([[2.0, 2.0, 2.0]])  # meas/comp = 2, 1, 0.5
+    dL, _ = db_error(meas, comp, floor_rel=1e-12)
+    assert np.allclose(dL, 10.0 * np.log10([2.0, 1.0, 0.5])), dL
+
+    # Identical to the difference of the two dB levels.
+    l_meas, _ = to_db(meas, 1.0, 1e-12)
+    l_comp, _ = to_db(comp, 1.0, 1e-12)
+    assert np.allclose(dL, l_meas - l_comp)
+
+    # Sign: measured > computed -> positive; measured < computed -> negative.
+    assert dL[0, 0] > 0
+    assert dL[0, 2] < 0
+    print("  ok")
+
+
+def test_pooled_and_per_sensor_stats():
+    """db_error_stats pools |dL|; per-sensor reduces over frequency only."""
+    print("Test 8: pooled + per-sensor error statistics...")
+    dL = np.array([
+        [1.0, -3.0, 2.0],   # |.| = 1, 3, 2
+        [-0.5, 0.5, 4.0],   # |.| = .5, .5, 4
+    ])
+    max_abs, med_abs = db_error_stats(dL)
+    # pooled |.| sorted = [.5, .5, 1, 2, 3, 4] -> max 4, median 1.5
+    assert np.isclose(max_abs, 4.0)
+    assert np.isclose(med_abs, 1.5)
+
+    per_sensor_max = np.max(np.abs(dL), axis=1)
+    assert np.allclose(per_sensor_max, [3.0, 4.0])
+    print("  ok")
+
+
+def _db_config(fig_path, top_n=None, per_sensor=True, save_csv=False):
+    return {
+        'plot': {
+            'kind': ['validation_db'], 'log_scale': True,
+            'title': 'test', 'ylabel': r'$S_{ii}$', 'xlabel': None,
+            'figsize': [6, 5], 'ylim': None, 'xlim': None,
+            'db_ref': 1.0, 'db_floor': 1e-12,
+        },
+        'output': {
+            'figure_path': str(fig_path), 'figure_format': 'png',
+            'dpi': 60, 'save_selection_csv': save_csv, 'top_n': top_n,
+            'per_sensor': per_sensor,
+        },
+    }
+
+
+def test_per_sensor_cap_and_naming(tmp_path=None):
+    """top_n caps per-sensor figures worst-first; files named sensor_<idx>."""
+    print("Test 9: per-sensor cap + naming...")
+    out = Path(tmp_path) if tmp_path else Path('.')
+    freq = np.array([1.0, 2.0, 3.0])
+    comp = np.ones((3, 3))
+    meas = np.array([
+        [1.05, 1.05, 1.05],  # smallest error
+        [1.3, 1.3, 1.3],     # medium
+        [3.0, 3.0, 3.0],     # largest
+    ])
+
+    # Ordering + cap logic (worst-first, capped, skipped count).
+    dL_all, _ = db_error(meas, comp, 1e-12)
+    order, n_skipped = select_per_sensor_order(dL_all, top_n=2)
+    assert list(order) == [2, 1], order
+    assert n_skipped == 1
+
+    # End-to-end file emission with face indices 10/11/12.
+    selection = [(10, 'node 10'), (11, 'node 11'), (12, 'node 12')]
+    fig_path = out / 'all.png'
+    config = _db_config(fig_path, top_n=2, per_sensor=True)
+    plot_validation_db(comp, meas, freq, selection, 'Frequency [Hz]',
+                       config, fig_path)
+
+    assert fig_path.exists()  # combined figure
+    subdir = fig_path.parent / 'per_sensor'
+    written = sorted(p.name for p in subdir.glob('sensor_*.png'))
+    # worst two: selection[2]=idx12, selection[1]=idx11; idx10 skipped.
+    assert written == ['sensor_11.png', 'sensor_12.png'], written
+    print("  ok")
+
+
+def test_config_validation_db(tmp_path=None):
+    """validation_db requires validation; db_ref/db_floor must be positive."""
+    print("Test 10: validation_db config validation...")
+    out = Path(tmp_path) if tmp_path else Path('.')
+    diag = out / 'd.npy'
+    side = out / 's.json'
+    np.save(diag, np.ones((3, 2)))
+    side.write_text('{"mode": "diagonal", "freq_indices": [0, 1]}')
+
+    base_input = {'diagonal_npy_path': str(diag), 'sidecar_json_path': str(side)}
+
+    # validation_db without a validation file -> error.
+    cfg = _base_config(
+        input=dict(base_input),
+        plot={'kind': 'validation_db'},
+        selection={'indices': [0], 'coordinates': None},
+    )
+    try:
+        validate_config(cfg)
+        raise AssertionError("expected ValueError: validation_db needs val")
+    except ValueError:
+        pass
+
+    # Non-positive db_ref / db_floor -> error (isolated via 'lines' kind).
+    for bad in ({'db_ref': 0.0}, {'db_floor': -1e-9}):
+        cfg = _base_config(
+            input=dict(base_input),
+            plot={'kind': 'lines', **bad},
+            selection={'indices': [0]},
+        )
+        try:
+            validate_config(cfg)
+            raise AssertionError(f"expected ValueError for {bad}")
+        except ValueError:
+            pass
+    print("  ok")
+
+
 def run_all_tests() -> bool:
     import tempfile
 
@@ -288,6 +433,11 @@ def run_all_tests() -> bool:
         test_coordinate_alignment_integrity,
         test_box_band_switchover,
         test_config_validation,
+        test_db_conversion_and_floor,
+        test_signed_db_error,
+        test_pooled_and_per_sensor_stats,
+        test_per_sensor_cap_and_naming,
+        test_config_validation_db,
     ]
     passed = failed = 0
     for t in tests:

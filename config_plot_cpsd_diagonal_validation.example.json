@@ -18,20 +18,23 @@
         "match_tolerance": 0.05
     },
     "plot": {
-        "kind": ["lines", "box", "error"],
+        "kind": ["lines", "box", "error", "validation_db"],
         "log_scale": true,
-        "title": "Uplifted CPSD diagonal: solution vs validation",
-        "ylabel": "S_ii [unit^2/Hz]",
+        "title": "Uplifted CPSD diagonal: measured vs computed",
+        "ylabel": "S_ii",
         "xlabel": null,
-        "figsize": [10, 6],
+        "figsize": [10, 7],
         "ylim": null,
-        "xlim": null
+        "xlim": null,
+        "db_ref": 1.0,
+        "db_floor": 1e-12
     },
     "output": {
         "figure_path": "results_cpsd_inverse/diagonal_vs_frequency.png",
         "figure_format": "png",
         "dpi": 150,
         "save_selection_csv": true,
-        "top_n": null
+        "top_n": null,
+        "per_sensor": true
     }
 }
