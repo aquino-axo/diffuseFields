@@ -14,16 +14,19 @@
         "frequencies": null
     },
     "regularization": {
-        "alpha": 1e-6,
+        "alpha": 1e-06,
         "alpha_sweep": null,
-        "psd_tol_rel": 0.0
+        "psd_tol_rel": 0.0,
+        "alpha_scaling": "absolute",
+        "filter_form": "lavrentiev"
     },
     "cv": {
         "enabled": false,
         "k_folds": 5,
         "alpha_mode": "global",
         "seed": 0,
-        "save_fold_scores": false
+        "save_fold_scores": false,
+        "norm_weight": 0.01
     },
     "output": {
         "output_dir": "results_cpsd_inverse",

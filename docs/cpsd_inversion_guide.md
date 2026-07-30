@@ -11,10 +11,13 @@ each driver consumes, what it produces, the relevant configuration keys,
 and the gotchas we have already hit.
 
 The math is summarized at a working level; see
-[`DiffuseFields_Inversion.pdf`](../DiffuseFields_Inversion.pdf) for the
-full derivation and
+[`jasa23b.pdf`](../jasa23b.pdf) (Aquino & Bonnet, JASA 2023, Sec. III E) for
+the full derivation and
 [`docs/cpsd_inverse_summary.md`](cpsd_inverse_summary.md) for
-implementation notes on the solver class.
+implementation notes on the solver class. The slide deck
+[`DiffuseFields_Inversion.pdf`](../DiffuseFields_Inversion.pdf) presents the
+paper's *second* regularization method (eq. 24), which is **not** what the code
+implements — see [Math recap](#math-recap).
 
 ## Contents
 
@@ -22,7 +25,7 @@ implementation notes on the solver class.
 2. [Math recap (just enough to interpret)](#math-recap)
 3. [Inputs you must have](#inputs-you-must-have)
 4. [Step 1 — POD modes from sideset → `.npy`](#step-1)
-5. [Step 2 — Per-frequency Tikhonov inversion](#step-2)
+5. [Step 2 — Per-frequency regularized inversion](#step-2)
    - [Row-index subset of the data](#step-2-row-subset)
    - [K-fold cross-validation for selecting α](#step-2-cv)
 6. [Step 3 — Lift reduced CPSD to full space](#step-3)
@@ -96,20 +99,52 @@ Symbols (all complex unless noted):
 | `S_r` | `(n_pod, n_pod, n_freq)` | Recovered reduced CPSD (the unknown) |
 | `S* = Φ S_r Φᴴ` | `(N, N, n_freq)` | Lifted full-space CPSD |
 
-At each frequency we solve the column-wise least-squares problem
-(eqs. 35–36 of the reference)
+At each frequency we solve one regularized problem per column `φ_q` of `Ψ`
+(where `Ψ Ψᴴ` is the PSD projection of `Ĝ`) and sum the outer products —
+the structure of eqs. 19–21 in
+[`jasa23b.pdf`](../jasa23b.pdf). With the reduced SVD `T_r = X Σ Yᴴ` and
+`Z = Xᴴ Ψ`:
 
 ```
-s_q(α) = argmin (1/2)·‖T_r u − φ_q‖² + α·‖u‖²
+K   = Y diag(g(σ_i, α)) Z
+S_r = K Kᴴ                    (PSD by construction for any α ≥ 0 and any g)
 ```
 
-where `φ_q` are the columns of `Ψ` and `Ψ Ψᴴ` is the PSD projection of
-`Ĝ`. With the reduced SVD `T_r = X Σ Yᴴ`, the closed form is
+The diagonal filter `g` is selected by `regularization.filter_form`:
 
-```
-K   = Y (Σ + α I)⁻¹ Z,        Z = Xᴴ Ψ
-S_r = K Kᴴ                    (PSD by construction for any α ≥ 0)
-```
+| `filter_form` | `g(σ, α)` | α units | notes |
+|---|---|---|---|
+| `"lavrentiev"` (default) | `1/(σ + α)` | σ | eq. 21 / Remark 2 as printed; reproduces the paper's published results |
+| `"tikhonov"` | `σ/(σ² + α)` | σ² | minimizer of the least-squares problem eq. 19 states |
+
+Both are monotone in σ, both keep `S_r` PSD, and both converge to the
+minimum-norm solution as α → 0.
+
+> **Important — eq. 20 of the reference contains an error.** It states that
+> `Y (Σ + α I)⁻¹ Xᴴ φ_q` is the minimizer of the least-squares functional in
+> eq. 19, `½‖T_r u − φ_q‖² + α‖u‖²`. It is not; that minimizer is
+> `Y (Σ² + 2αI)⁻¹ Σ Xᴴ φ_q`. Remark 4's thin-QR route (QR of `[T_r; √α I]`)
+> confirms eq. 19 is the intended problem and eq. 20 is the typo.
+> `"lavrentiev"` is still a valid regularization — it solves the
+> Lavrentiev-type equation
+> `((T_rᴴT_r)^½ + αI) u = Qᴴ φ_q` for the polar factor — and it remains the
+> default so existing results reproduce. Use `"tikhonov"` if you want eq. 19's
+> minimizer. Full analysis in
+> [`cpsd_inverse_summary.md`](cpsd_inverse_summary.md#the-error-in-eq-20).
+
+**α scaling.** `σ_max(T_r(f))` varies by orders of magnitude across a band
+containing resonances, so one absolute α applies very different damping at
+different frequencies. `regularization.alpha_scaling` controls this:
+
+| value | meaning |
+|---|---|
+| `"absolute"` (default) | α used as given, in the filter's own units |
+| `"relative"` | α = value × `σ_max(T_r(f))^p`, so the value is dimensionless |
+
+with `p = 1` for `"lavrentiev"` and `p = 2` for `"tikhonov"`. Because the power
+follows the filter, a `"relative"` grid carries over unchanged if you switch
+filters. **`"relative"` is recommended for any multi-frequency run**; the
+default stays `"absolute"` only so existing configs keep their meaning.
 
 The diagnostic shipped with each solve is the relative Frobenius residual
 
@@ -117,9 +152,11 @@ The diagnostic shipped with each solve is the relative Frobenius residual
 ‖T_r S_r T_rᴴ − Ĝ‖_F / ‖Ĝ‖_F
 ```
 
+computed against the raw (unclipped) `Ĝ`.
+
 If you set `regularization.alpha_sweep`, the SVD and `Ψ` are computed
-once per frequency and only the `(Σ + α I)⁻¹` factor changes — the sweep
-is cheap.
+once per frequency and only the diagonal filter `g(σ_i, α)` changes — the
+sweep is cheap.
 
 ---
 
@@ -200,7 +237,7 @@ numeric index, so `ev10` follows `ev9`.
 ---
 
 <a name="step-2"></a>
-## 5. Step 2 — Per-frequency Tikhonov inversion
+## 5. Step 2 — Per-frequency regularized inversion
 
 Solves `S_r(f)` per frequency given `T_r`, `Φ`, and `Ĝ`.
 
@@ -228,9 +265,11 @@ python src/run_cpsd_inverse.py config_cpsd_inverse.json
   },
   "physics": { "frequencies": null },
   "regularization": {
-    "alpha":       1e-6,
-    "alpha_sweep": null,
-    "psd_tol_rel": 0.0
+    "alpha":         1e-6,
+    "alpha_sweep":   null,
+    "psd_tol_rel":   0.0,
+    "alpha_scaling": "absolute",
+    "filter_form":   "lavrentiev"
   },
   "output": {
     "output_dir":    "results_cpsd_inverse",
@@ -265,6 +304,12 @@ python src/run_cpsd_inverse.py config_cpsd_inverse.json
 | `alpha` | Scalar α applied at every frequency. |
 | `alpha_sweep` | List of α values, e.g. `[1e-8, 1e-6, 1e-4]`. The SVD of `T_r` and the PSD projection of Ĝ are computed once per frequency and reused across all α. |
 | `psd_tol_rel` | Relative threshold for clipping Ĝ's eigenvalues before the PSD square root. `0.0` clips only strictly-negative eigenvalues. |
+| `alpha_scaling` | `"absolute"` (default) or `"relative"` (α = value × `σ_max(T_r(f))^p`). **Use `"relative"` for any band spanning resonances.** See [Math recap](#math-recap). |
+| `filter_form` | `"lavrentiev"` (default, `1/(σ+α)`) or `"tikhonov"` (`σ/(σ²+α)`). See [Math recap](#math-recap). |
+
+Switching `filter_form` changes what α *means* (σ versus σ²), so an
+`"absolute"` grid must be re-chosen. A `"relative"` grid carries over
+unchanged, because the σ power follows the filter.
 
 #### `output`
 
@@ -379,7 +424,8 @@ the pipeline does — symmetric row/column slicing of `T_r` and `G`.
   "k_folds": 5,
   "alpha_mode": "global",
   "seed": 0,
-  "save_fold_scores": false
+  "save_fold_scores": false,
+  "norm_weight": 1e-2
 }
 ```
 
@@ -390,6 +436,7 @@ the pipeline does — symmetric row/column slicing of `T_r` and `G`.
 | `cv.alpha_mode` | `"global"` (default) or `"per_freq"`. See below. |
 | `cv.seed` | Seed for the `numpy.default_rng` shuffle of the index set. Same seed → same partition. Default `0`. |
 | `cv.save_fold_scores` | When `true`, `cv_results.npz` includes the per-fold score array of shape `(n_freq, n_alpha, k_folds)`. Default `false` (saves memory). |
+| `cv.norm_weight` | Dimensionless weight μ on the solution-norm term of the CV score; default `1e-2`. `0.0` gives the pure held-out prediction score. Useful range ≈ `1e-3`–`1e-1`. See [The score](#step-2-cv-score). |
 
 When `cv.enabled` is `true`:
 
@@ -407,9 +454,38 @@ For each frequency `f`, each fold `k`, and each candidate α:
 3. SVD of `T_r[I_train, :, f]` once per (f, k); reused across α.
 4. `S_r = K Kᴴ` via the same closed form as the non-CV solver.
 5. Predict `Ĝ_pred = T_r[I_val, :, f] S_r T_r[I_val, :, f]ᴴ`.
-6. `score(f, α, k) = ‖Ĝ_pred − G_val_clipped‖_F / ‖G_val_clipped‖_F`.
+6. ```
+   score(f, α, k) = ‖Ĝ_pred − G_val_clipped‖_F / ‖G_val_clipped‖_F
+                  + norm_weight · ‖S_r‖_F · σ_max(f)² / ‖Ĝ(f)‖_F
+   ```
 
 CV score per `(f, α)` is the mean over folds.
+
+`σ_max(f)` here is that of the **full** `T_r[:, :, f]`, not the fold's
+training subset, so one candidate maps to one and the same absolute α in
+every fold and in the refit.
+
+<a name="step-2-cv-score"></a>
+#### The score, and why it has two terms
+
+The first term alone is a pure data-fit criterion. At ill-conditioned
+frequencies it is nearly blind to the directions the ill-conditioning
+amplifies — many very different `S_r` reproduce almost the same sensor CPSD —
+because the CPSD forward map `S ↦ T_r S T_rᴴ` has condition number
+`cond(T_r)²`. Empirically a prediction-only score **under-regularizes by
+about a decade** exactly where `cond(T_r)` is worst, i.e. in the bands
+flanking resonances. The second term supplies the information the prediction
+score lacks. Its `σ_max(f)²/‖Ĝ(f)‖_F` factor makes it dimensionless (since
+`‖S_r‖ ~ ‖Ĝ‖/σ_max²`), so a single `norm_weight` works across a whole band.
+
+The norm term must be added to the **held-out** residual, never the training
+residual. `S_r(α)` already minimizes (training fit) + α·(penalty), so
+minimizing (training fit) + μ·(penalty) over the family `{S_r(α)}` returns
+α = μ identically — a circular criterion that just echoes the constant you
+supplied. Scoring the fit on sensors the fold did not see breaks that fixed
+point. (It is also why an L-curve takes the *corner* of
+`(log‖S_r‖, log‖residual‖)` rather than a weighted sum: curvature is
+invariant to the weighting.)
 
 Selection:
 
@@ -445,8 +521,14 @@ post-processing (Steps 3–5) does not need to know CV happened.
 | `seed` | scalar int |
 
 `summary.json` gains a `cv` subsection (`{enabled, k_folds, alpha_mode,
-seed, alpha_grid, alpha_star}`) plus `alphas_per_freq` (the α actually
-used at each frequency in the refit — useful for audit when α varies).
+seed, norm_weight, alpha_grid, alpha_star}`) plus `alphas_per_freq` (the α
+actually used at each frequency in the refit — useful for audit when α
+varies).
+
+Every run — CV or not — also records `alpha_scaling`, `filter_form`,
+`sigma_max_per_freq`, and `alphas_effective` (the absolute α actually applied
+per frequency). Under `"relative"` scaling the grid values alone do not tell
+you what was applied, so check `alphas_effective` when auditing a run.
 
 Diagnostic plots written when `output.save_figures` is `true`:
 
@@ -972,10 +1054,26 @@ rm -rf results/sideset_pod_modes.npy results_cpsd_inverse/ data/cube_diag.e
   orders of magnitude on the picked side) and re-run. The test suite
   guards against α* landing on a boundary on synthetic noise; on real
   data a boundary win is a config bug, not a noise floor.
-- **Stale `cpsd_inverse_summary.md`.** That doc still describes the old
-  entrywise filter `H_ij = σ_i σ_j (ZZᴴ)_ij / (σ_i² σ_j² + α)` from
-  eq. 43 of the reference. The solver was switched to the PSD-preserving
-  form (eqs. 35–36, `S_r = K Kᴴ`) in commit `f5b3177`. Trust the math
-  recap in [section 2](#math-recap) of this guide and the docstring at
-  the top of [`src/cpsd_inverse.py`](../src/cpsd_inverse.py); the rest
-  of the summary doc still describes accurate plumbing.
+- **An absolute α across a band spanning resonances.** `σ_max(T_r(f))` can
+  vary by orders of magnitude over a modal band, so a single
+  `alpha_scaling: "absolute"` value applies wildly different damping at
+  different frequencies — heavy damping where the response is small, almost
+  none at the peaks. Set `alpha_scaling: "relative"` for any multi-frequency
+  run. This is the most common cause of an inversion that looks fine in the
+  midband and blows up near resonances.
+- **Error bands are wider than the resonances themselves.** The CPSD forward
+  map has condition number `cond(T_r)²`, and `cond(T_r)` stays elevated for
+  several half-power bandwidths on each flank of a mode. Excising only the
+  resonant frequencies is not enough; expect a band roughly `±4` half-power
+  bandwidths (`±8ζf`) wide to be affected.
+- **`cv.norm_weight: 0` reproduces the old pure-prediction score, which
+  under-regularizes.** It is kept only for reproducing earlier runs. Leave it
+  at the `1e-2` default unless you are deliberately reproducing a pre-change
+  result. See [The score](#step-2-cv-score).
+- **Switching `filter_form` silently reinterprets an absolute α grid.** α has
+  units of σ for `"lavrentiev"` and σ² for `"tikhonov"`. If you switch filters
+  while using `alpha_scaling: "absolute"`, re-choose the grid. Under
+  `"relative"` the grid carries over unchanged.
+- **Do not follow Remark 4's thin-QR route for `"lavrentiev"`.** QR of
+  `[T_r; √α I]` computes the *Tikhonov* solution, which is not eq. 21. It
+  corresponds to `filter_form: "tikhonov"`. See [Math recap](#math-recap).

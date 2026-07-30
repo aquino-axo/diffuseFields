@@ -1,37 +1,162 @@
 """
-Reduced-basis Tikhonov inversion for cross-power spectral densities (CPSDs).
+Reduced-basis regularized inversion for cross-power spectral densities (CPSDs).
 
 POD reduction:
 
   S    = Phi @ S_r @ Phi^h    (Phi in C^{N x n})
   T_r  = T @ Phi              (reduced transfer matrix, T_r in C^{m x n})
 
-The target CPSD is factored G_hat ~ Psi Psi^h via PSD square root.
-Following Aquino & Bonnet, "Active Design of Diffuse Acoustic Fields in
-Enclosures" (eqs. 34--36), we regularize the per-direction least-squares
-problem
+The target CPSD is factored G_hat ~ Psi Psi^h via PSD square root. Following
+the *first* regularization method of Aquino & Bonnet, "Active design of
+diffuse acoustic fields in enclosures", JASA 2023 (eqs. 19--21, Remark 2), we
+solve one regularized problem per column phi_q of Psi and sum the outer
+products. With the reduced SVD T_r = X Sigma Y^h and Z := X^h Psi,
 
-  s_q(alpha) = argmin_u (1/2) || T_r u - phi_q ||_2^2 + alpha || u ||_2^2,
+  S_r(alpha) = K K^h,   K := Y diag(g(sigma_i, alpha)) Z,
 
-whose closed-form solution via the reduced SVD T_r = X Sigma Y^h is
+for a diagonal spectral filter g. S_r is positive semidefinite by construction
+for any alpha >= 0 and any g, being a sum of outer products s_q s_q^h --
+unlike the paper's second method H_ij = sigma_i sigma_j (Z Z^h)_ij /
+(sigma_i^2 sigma_j^2 + alpha) (eq. 24), which can come out indefinite for
+alpha > 0.
 
-  s_q(alpha) = Y (Sigma + alpha I)^{-1} X^h phi_q,
+Two filters are available via ``filter_form`` (see :func:`spectral_filter`):
 
-and summing over the columns phi_q of Psi gives
+  'lavrentiev'      g = 1/(sigma + alpha)          alpha ~ sigma^1   [default]
+  'tikhonov'  g = sigma/(sigma^2 + alpha)    alpha ~ sigma^2
 
-  S_r(alpha) = K K^h,   K := Y (Sigma + alpha I)^{-1} Z,   Z = X^h Psi.
+Both are monotone, both converge to the minimum-norm solution as alpha -> 0,
+and both keep S_r PSD. They differ in which problem they solve:
 
-S_r is positive semidefinite by construction for any alpha >= 0 (cf.
-Remark 3 of the reference). This replaces the earlier entrywise filter
-H_ij = sigma_i sigma_j (Z Z^h)_ij / (sigma_i^2 sigma_j^2 + alpha)
-(reference eq. 43), which is Hermitian but not PSD-preserving when
-alpha > 0; both formulations converge to the same minimum-norm solution
-as alpha -> 0.
+- 'lavrentiev' reproduces eq. (21)/Remark 2 exactly as printed, and hence the
+  paper's published numerical results. It is *not* the minimizer of the
+  Tikhonov functional in eq. (19): it is the solution of the Lavrentiev-type
+  equation ((T_r^h T_r)^{1/2} + alpha I) u = Q^h phi_q, where T_r = Q P is the
+  polar decomposition (Q = X Y^h, P = (T_r^h T_r)^{1/2}). Equivalently it
+  minimizes (1/2) u^h P u - Re(u^h Q^h phi_q) + (alpha/2)||u||^2.
+- 'tikhonov' is the minimizer of the least-squares functional eq. (19)
+  actually states, and matches the thin-QR route of Remark 4 (QR of
+  [T_r; sqrt(alpha) I]), which 'lavrentiev' does not.
+
+Convention for 'tikhonov': alpha is that of
+
+  min_u  ||T_r u - phi_q||^2 + alpha ||u||^2
+
+(equivalently (1/2)||.||^2 + (alpha/2)||u||^2), giving g = sigma/(sigma^2 +
+alpha). This is the standard convention and the one Remark 4's QR route
+implies. Eq. (19) as printed uses (1/2)||.||^2 + alpha||u||^2, whose minimizer
+is sigma/(sigma^2 + 2 alpha) -- so the paper's eq. (19) and its Remark 4
+differ from each other by a factor of 2 in alpha. Mapping:
+alpha_here = 2 * alpha_eq19.
+
+Because sigma_max(T_r) varies by orders of magnitude across a band containing
+resonances, a single absolute alpha applies very different damping at
+different frequencies. Prefer alpha_scaling='relative', which multiplies the
+supplied value by sigma_max(f) raised to the filter's alpha power, so the
+supplied number is dimensionless either way; see :func:`resolve_alphas`.
 """
 
 from typing import Optional, Tuple
 
 import numpy as np
+
+#: Supported meanings for the user-supplied regularization parameter.
+ALPHA_SCALINGS = ('absolute', 'relative')
+
+#: Supported diagonal spectral filters.
+FILTER_FORMS = ('lavrentiev', 'tikhonov')
+
+#: Power of sigma_max that alpha scales with, per filter. Used by
+#: alpha_scaling='relative' so the supplied parameter is dimensionless.
+ALPHA_SIGMA_POWER = {'lavrentiev': 1, 'tikhonov': 2}
+
+
+def spectral_filter(
+    sigma: np.ndarray,
+    alpha: float,
+    filter_form: str = 'lavrentiev',
+) -> np.ndarray:
+    """
+    Diagonal filter g applied as K = Y diag(g) X^h Psi.
+
+    Parameters
+    ----------
+    sigma : ndarray, shape (r,)
+        Singular values of T_r at this frequency, descending.
+    alpha : float
+        Effective (already resolved) regularization parameter.
+    filter_form : {'lavrentiev', 'tikhonov'}
+        ``'lavrentiev'`` gives ``1/(sigma + alpha)`` -- eq. (21)/Remark 2 as printed
+        in the paper. ``'tikhonov'`` gives ``sigma/(sigma**2 + alpha)`` -- the
+        minimizer of the least-squares functional of eq. (19), in the
+        convention ``||T_r u - phi||^2 + alpha||u||^2``. See the module
+        docstring for the factor-of-2 mapping to eq. (19)'s own alpha.
+
+    Returns
+    -------
+    ndarray, shape (r,)
+        The filter values. Both forms are monotone increasing in sigma and
+        tend to 1/sigma as alpha -> 0.
+    """
+    if filter_form == 'lavrentiev':
+        return 1.0 / (sigma + alpha)
+    if filter_form == 'tikhonov':
+        return sigma / (sigma ** 2 + alpha)
+    raise ValueError(
+        f"filter_form must be one of {FILTER_FORMS}, got {filter_form!r}"
+    )
+
+
+def resolve_alphas(
+    alphas: np.ndarray,
+    sigma_max: float,
+    alpha_scaling: str = 'absolute',
+    filter_form: str = 'lavrentiev',
+) -> np.ndarray:
+    """
+    Map user-supplied regularization parameters to the alpha actually applied.
+
+    Parameters
+    ----------
+    alphas : array_like, shape (n_alpha,)
+        Non-negative parameters as given in the configuration.
+    sigma_max : float
+        Largest singular value of the *full* T_r at this frequency. Using the
+        full-matrix value (not a CV fold's) keeps a given ``lam`` mapped to one
+        and the same absolute alpha in both the CV folds and the final refit.
+    alpha_scaling : {'absolute', 'relative'}
+        ``'absolute'`` returns ``alphas`` unchanged; they then carry the
+        filter's own units (sigma for ``'lavrentiev'``, sigma^2 for ``'tikhonov'``).
+        ``'relative'`` returns ``alphas * sigma_max ** p`` with
+        ``p = ALPHA_SIGMA_POWER[filter_form]``, making the supplied numbers
+        dimensionless and comparable across frequencies for either filter.
+    filter_form : {'lavrentiev', 'tikhonov'}
+        Selects the power ``p``; ignored when ``alpha_scaling='absolute'``.
+
+    Returns
+    -------
+    ndarray, shape (n_alpha,)
+        The effective alphas to pass to :func:`spectral_filter`.
+    """
+    alphas = np.atleast_1d(np.asarray(alphas, dtype=np.float64))
+    if alpha_scaling not in ALPHA_SCALINGS:
+        raise ValueError(
+            f"alpha_scaling must be one of {ALPHA_SCALINGS}, "
+            f"got {alpha_scaling!r}"
+        )
+    if filter_form not in FILTER_FORMS:
+        raise ValueError(
+            f"filter_form must be one of {FILTER_FORMS}, "
+            f"got {filter_form!r}"
+        )
+    if alpha_scaling == 'absolute':
+        return alphas
+    if not np.isfinite(sigma_max) or sigma_max <= 0:
+        raise ValueError(
+            f"alpha_scaling='relative' needs a finite positive sigma_max, "
+            f"got {sigma_max}"
+        )
+    return alphas * float(sigma_max) ** ALPHA_SIGMA_POWER[filter_form]
 
 
 class CPSDInverseSolver:
@@ -100,12 +225,28 @@ class CPSDInverseSolver:
         # Scale each column of U by sqrt(lam_j) so that Psi @ Psi^h = U L U^h.
         return U * np.sqrt(lam)[np.newaxis, :]
 
+    def sigma_max(self, freq_idx: int) -> float:
+        """
+        Largest singular value of T_r at ``freq_idx``.
+
+        Exposed so callers can report, or themselves resolve, the effective
+        alpha implied by ``alpha_scaling='relative'``.
+        """
+        if not 0 <= freq_idx < self.n_freq:
+            raise ValueError(
+                f"freq_idx must be in [0, {self.n_freq}), got {freq_idx}"
+            )
+        s = np.linalg.svd(self.T_r[:, :, freq_idx], compute_uv=False)
+        return float(s.max())
+
     def solve_single_freq(
         self,
         freq_idx: int,
         G: np.ndarray,
         alphas: np.ndarray,
         psd_tol_rel: float = 0.0,
+        alpha_scaling: str = 'absolute',
+        filter_form: str = 'lavrentiev',
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Solve the inverse problem at one frequency for one or more alphas.
@@ -118,10 +259,20 @@ class CPSDInverseSolver:
             Experimental CPSD at this frequency. Hermitized internally.
         alphas : array_like, shape (n_alpha,)
             Non-negative regularization parameters to evaluate. The SVD and
-            H_hat are computed once and reused across all alphas.
+            H_hat are computed once and reused across all alphas. Interpreted
+            according to ``alpha_scaling``.
         psd_tol_rel : float
             Relative threshold for clipping G's eigenvalues to zero before
             forming the PSD square root.
+        alpha_scaling : {'absolute', 'relative'}
+            How to interpret ``alphas``; see :func:`resolve_alphas`.
+            ``'relative'`` multiplies them by sigma_max(T_r) at this
+            frequency, raised to the filter's alpha power, which is what makes
+            one parameter value comparable across a band containing
+            resonances.
+        filter_form : {'lavrentiev', 'tikhonov'}
+            Diagonal spectral filter; see :func:`spectral_filter`. Default
+            ``'lavrentiev'`` reproduces the paper as printed.
 
         Returns
         -------
@@ -152,6 +303,11 @@ class CPSDInverseSolver:
         X, sigma, Vh = np.linalg.svd(T_r, full_matrices=False)
         Y = Vh.conj().T  # (n_pod, r)
 
+        # Resolve lam -> alpha once the spectrum is known.
+        alphas_eff = resolve_alphas(
+            alphas, sigma[0], alpha_scaling, filter_form
+        )
+
         # PSD square root: Psi Psi^h is the PSD projection of G.
         psi = self._psd_project(G, tol_rel=psd_tol_rel)  # (m, m)
         Z = X.conj().T @ psi                              # (r, m)
@@ -162,10 +318,10 @@ class CPSDInverseSolver:
         )
         residuals_rel = np.empty(alphas.size, dtype=np.float64)
 
-        for k, alpha in enumerate(alphas):
-            # K = Y (Sigma + alpha I)^{-1} Z, S_r = K K^h  (eqs. 35-36).
-            inv_filter = 1.0 / (sigma + alpha)             # (r,)
-            K = Y @ (inv_filter[:, None] * Z)              # (n_pod, m)
+        for k, alpha in enumerate(alphas_eff):
+            # K = Y diag(g(sigma)) Z, S_r = K K^h  (eq. 21 form).
+            g = spectral_filter(sigma, alpha, filter_form)  # (r,)
+            K = Y @ (g[:, None] * Z)                        # (n_pod, m)
             S_r = K @ K.conj().T                           # PSD by construction
             S_r_out[:, :, k] = S_r
 

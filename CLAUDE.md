@@ -63,6 +63,19 @@ No build step or package manager required. Dependencies: NumPy, SciPy, Matplotli
 - Outputs `projection_report.json` (metadata incl. basis rank + per-frequency residuals + summary stats), `relative_residual.csv`, and a `relative_residual_vs_frequency.{fmt}` plot
 - Usage: `python run_basis_projection.py basis.npy data.npy --output-dir results_projection`
 
+**cpsd_inverse.py** - `CPSDInverseSolver` for the per-frequency regularized CPSD inverse problem of Aquino & Bonnet, JASA 2023 (`jasa23b.pdf`, Sec. III E). Recovers reduced CPSD `S_r` from a sparse sensor CPSD `Ĝ` given `T_r = T Φ`:
+- `S_r = K K^h` with `K = Y diag(g(σ, α)) X^h Ψ`, where `T_r = X Σ Y^h` and `Ψ Ψ^h` is the PSD projection of `Ĝ`. PSD by construction for any α ≥ 0
+- `spectral_filter(sigma, alpha, filter_form)` selects `g`: `'lavrentiev'` (default, `1/(σ+α)`) reproduces the paper's eq. 21 as printed; `'tikhonov'` (`σ/(σ²+α)`) is the minimizer of the least-squares problem eq. 19 states. **Eq. 20 of the paper misstates these as equal — they are not**; see `docs/cpsd_inverse_summary.md`
+- `resolve_alphas(alphas, sigma_max, alpha_scaling, filter_form)` maps configured α to the applied α. Under `'relative'`, `α = value · σ_max(f)^p` with `p = 1` (lavrentiev) or `2` (tikhonov), keeping the configured value dimensionless. **Prefer `'relative'` for any band spanning resonances** — `σ_max` varies by orders of magnitude, so one absolute α damps very unevenly
+- The paper's second method (eq. 24, entrywise `σ_iσ_j/(σ_i²σ_j²+α)`) is deliberately **not** implemented: it is not PSD-guaranteed for α > 0
+
+**cpsd_inverse_cv.py** - `KFoldCVSelector` chooses α by k-fold cross-validation over the **sensor axis**. Score per (frequency, fold, α) is the held-out relative prediction residual plus `norm_weight · ‖S_r‖_F σ_max(f)²/‖Ĝ(f)‖_F`:
+- The norm term (default weight `1e-2`) is essential near resonances: the CPSD forward map `S ↦ T_r S T_r^h` has condition number `cond(T_r)²`, and a pure prediction score under-regularizes by ~1 decade where `cond(T_r)` is worst. `norm_weight=0` restores the old prediction-only score
+- It must be added to the **held-out** residual; adding it to the training residual is circular (returns α = the weight you supplied)
+- The λ→α map uses the *full-matrix* `σ_max(f)`, not a fold's, so one candidate means one absolute α in every fold and in the refit
+
+**run_cpsd_inverse.py** - Config-driven driver (`config_cpsd_inverse.json`). Key `regularization` settings: `alpha`/`alpha_sweep`, `psd_tol_rel`, `alpha_scaling`, `filter_form`; `cv` settings: `enabled`, `k_folds`, `alpha_mode`, `seed`, `norm_weight`. Writes per-frequency `.npz`, `summary.json` (incl. `alpha_scaling`, `filter_form`, `sigma_max_per_freq`, `alphas_effective`), `cv_results.npz`, and diagnostic plots. Full pipeline walkthrough in `docs/cpsd_inversion_guide.md`.
+
 ## Key Physics
 
 The diffuse field is modeled as superposition of N plane waves:
