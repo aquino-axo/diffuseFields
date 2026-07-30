@@ -496,7 +496,7 @@ A single `.npy` file containing a complex `(n_faces, n_modes)` array whose colum
 
 ## 7. CPSD Inverse Problem
 
-Recovers a reduced (POD-coordinate) CPSD `S_r` of shape `(n_pod, n_pod)` per frequency from a measured sensor CPSD `Ĝ` of shape `(n_sensors, n_sensors)`, using a reduced transfer matrix `T_r = T Φ` of shape `(n_sensors, n_pod, n_freq)`. Solves a Tikhonov-regularized inverse problem per frequency via a closed-form SVD expression. See `docs/cpsd_inverse_summary.md` for the math and `DiffuseFields_Inversion.pdf` for the derivation.
+Recovers a reduced (POD-coordinate) CPSD `S_r` of shape `(n_pod, n_pod)` per frequency from a measured sensor CPSD `Ĝ` of shape `(n_sensors, n_sensors)`, using a reduced transfer matrix `T_r = T Φ` of shape `(n_sensors, n_pod, n_freq)`. Solves a regularized inverse problem per frequency via a closed-form SVD expression `S_r = K Kᴴ`, `K = Y diag(g(σ, α)) Xᴴ Ψ`, which is PSD by construction. The spectral filter `g` is selectable: `"lavrentiev"` (default, `1/(σ+α)`) reproduces eq. 21 of the reference as printed, and `"tikhonov"` (`σ/(σ²+α)`) is the minimizer of the least-squares problem eq. 19 states. See `docs/cpsd_inverse_summary.md` for the math (including a documented error in eq. 20 of the reference), `docs/cpsd_inversion_guide.md` for the end-to-end pipeline, and `jasa23b.pdf` for the derivation.
 
 ### Usage
 
@@ -520,7 +520,17 @@ python run_cpsd_inverse.py config_cpsd_inverse.json
     },
     "regularization": {
         "alpha": 1e-6,
-        "psd_tol_rel": 0.0
+        "psd_tol_rel": 0.0,
+        "alpha_scaling": "absolute",
+        "filter_form": "lavrentiev"
+    },
+    "cv": {
+        "enabled": false,
+        "k_folds": 5,
+        "alpha_mode": "global",
+        "seed": 0,
+        "save_fold_scores": false,
+        "norm_weight": 1e-2
     },
     "output": {
         "output_dir": "results_cpsd_inverse",
@@ -553,6 +563,29 @@ python run_cpsd_inverse.py config_cpsd_inverse.json
 | `alpha` | Scalar α applied to every frequency (mutually exclusive with `alpha_sweep`) |
 | `alpha_sweep` | List of α values applied to every frequency (e.g. `[1e-8, 1e-6, 1e-4]`); SVD is reused across α |
 | `psd_tol_rel` | Relative threshold for clipping `Ĝ`'s eigenvalues before PSD square root (default 0.0 = clip only strictly negative) |
+| `alpha_scaling` | `"absolute"` (default) uses α as given; `"relative"` sets α = value × `σ_max(T_r(f))^p` so the value is dimensionless (`p` = 1 for `"lavrentiev"`, 2 for `"tikhonov"`). **Recommended for any band spanning resonances** — `σ_max` can vary by orders of magnitude, so one absolute α damps very unevenly across frequency. |
+| `filter_form` | `"lavrentiev"` (default) or `"tikhonov"`. Changes what α means (σ vs σ²), so an `"absolute"` grid must be re-chosen when switching; a `"relative"` grid carries over. |
+
+#### CV Section
+
+Optional k-fold cross-validation over the sensor axis for selecting α. Requires
+`regularization.alpha_sweep` as the candidate grid; a scalar `alpha` is
+rejected.
+
+| Parameter | Description |
+|-----------|-------------|
+| `enabled` | Master switch (default `false`) |
+| `k_folds` | Integer ≥ 2, ≤ number of sensor rows (default `5`) |
+| `alpha_mode` | `"global"` (default) picks one α for the band; `"per_freq"` picks one per frequency |
+| `seed` | Fold-shuffle seed (default `0`); same seed → same partition |
+| `save_fold_scores` | Also store the `(n_freq, n_alpha, k_folds)` score array |
+| `norm_weight` | Dimensionless weight μ on the solution-norm term of the CV score (default `1e-2`). `0.0` gives the pure held-out prediction score, which under-regularizes at ill-conditioned frequencies. Useful range ≈ `1e-3`–`1e-1`. |
+
+The CV score is the held-out relative prediction residual plus
+`norm_weight · ‖S_r‖_F σ_max(f)²/‖Ĝ(f)‖_F`. The second term is what keeps the
+selection from under-regularizing near resonances, where the CPSD problem's
+condition number is `cond(T_r)²`; see `docs/cpsd_inversion_guide.md` for why it
+belongs on the held-out residual rather than the training one.
 
 #### Output Section
 | Parameter | Description |
@@ -778,7 +811,7 @@ python run_sideset_interpolation.py config_sideset_interpolation.json
 #    that serves as the POD basis Phi for the inverse problem
 python run_sideset_pod_export.py config_sideset_pod_export.json
 
-# 4. Solve the per-frequency Tikhonov inverse for S_r given T_r, Phi, and
+# 4. Solve the per-frequency regularized inverse for S_r given T_r, Phi, and
 #    the experimental sensor CPSD G_hat (.mat)
 python run_cpsd_inverse.py config_cpsd_inverse.json
 

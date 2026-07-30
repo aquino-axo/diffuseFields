@@ -1,11 +1,27 @@
 """
-Driver script for reduced-basis CPSD Tikhonov inversion.
+Driver script for reduced-basis regularized CPSD inversion.
 
 Reads a JSON configuration that points to a reduced transfer matrix .npy
 (shape n_sensors x n_pod x n_freq), a POD basis .npy (shape N x n_pod), and
 an experimental CPSD .mat file (shape n_sensors x n_sensors x n_freq), then
-solves the per-frequency regularized inverse problem described in
-DiffuseFields_Inversion.pdf and saves S_r per frequency plus diagnostics.
+solves the per-frequency regularized inverse problem of Aquino & Bonnet,
+JASA 2023 (jasa23b.pdf, Sec. III E) and saves S_r per frequency plus
+diagnostics. See docs/cpsd_inversion_guide.md for the end-to-end pipeline.
+
+Two knobs matter for a band that spans resonances:
+
+  regularization.alpha_scaling = "relative"
+      alpha = value * sigma_max(T_r(f))**p, so the configured value is
+      dimensionless. sigma_max varies by orders of magnitude across a modal
+      band, so a single "absolute" alpha damps very unevenly with frequency.
+  cv.norm_weight (default 1e-2)
+      Weight on the solution-norm term of the CV score. A pure held-out
+      prediction score (norm_weight = 0) under-regularizes where cond(T_r) is
+      large, because the CPSD forward map's condition number is cond(T_r)**2.
+
+regularization.filter_form selects the spectral filter: "lavrentiev"
+(default, reproduces the paper's eq. 21 as printed) or "tikhonov" (the
+minimizer of the least-squares problem eq. 19 states). See cpsd_inverse.py.
 
 Usage:
     python run_cpsd_inverse.py config_cpsd_inverse.json
@@ -22,7 +38,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.io import loadmat
 
-from cpsd_inverse import CPSDInverseSolver
+from cpsd_inverse import (
+    ALPHA_SCALINGS,
+    FILTER_FORMS,
+    CPSDInverseSolver,
+    resolve_alphas,
+)
 from cpsd_inverse_cv import KFoldCVSelector
 
 
@@ -90,6 +111,15 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
             'alpha': None,          # scalar applied to all frequencies
             'alpha_sweep': None,    # list applied to every frequency
             'psd_tol_rel': 0.0,
+            # 'absolute': alpha used as given, in the filter's own units.
+            # 'relative': alpha = value * sigma_max(T_r(f))**p with p from
+            # ALPHA_SIGMA_POWER, so the value is dimensionless and comparable
+            # across frequencies. Default stays 'absolute' so existing configs
+            # keep their meaning.
+            'alpha_scaling': 'absolute',
+            # 'lavrentiev': 1/(sigma + alpha)       -- paper eq. 21 as printed
+            # 'tikhonov'  : sigma/(sigma^2 + alpha) -- minimizer of eq. 19
+            'filter_form': 'lavrentiev',
         },
         'cv': {
             'enabled': False,
@@ -97,6 +127,9 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
             'alpha_mode': 'global',     # 'global' or 'per_freq'
             'seed': 0,
             'save_fold_scores': False,
+            # Weight on the solution-norm term of the CV score. 0.0 gives the
+            # pure held-out prediction score.
+            'norm_weight': 1e-2,
         },
         'output': {
             'output_dir': 'results_cpsd_inverse',
@@ -204,6 +237,16 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
             f"regularization.psd_tol_rel must be a non-negative number, "
             f"got {reg['psd_tol_rel']}"
         )
+    if reg['alpha_scaling'] not in ALPHA_SCALINGS:
+        raise ValueError(
+            f"regularization.alpha_scaling must be one of "
+            f"{ALPHA_SCALINGS}, got {reg['alpha_scaling']!r}"
+        )
+    if reg['filter_form'] not in FILTER_FORMS:
+        raise ValueError(
+            f"regularization.filter_form must be one of "
+            f"{FILTER_FORMS}, got {reg['filter_form']!r}"
+        )
 
     cv = config['cv']
     if not isinstance(cv['enabled'], bool):
@@ -224,6 +267,14 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
             raise ValueError(
                 f"cv.save_fold_scores must be a bool, "
                 f"got {cv['save_fold_scores']!r}"
+            )
+        if (isinstance(cv['norm_weight'], bool)
+                or not isinstance(cv['norm_weight'], (int, float))
+                or not np.isfinite(cv['norm_weight'])
+                or cv['norm_weight'] < 0):
+            raise ValueError(
+                f"cv.norm_weight must be a finite non-negative number, "
+                f"got {cv['norm_weight']!r}"
             )
         if reg['alpha'] is not None:
             raise ValueError(
@@ -429,18 +480,45 @@ def run_inversion(config: Dict[str, Any]) -> Dict[str, Any]:
     else:
         alphas = np.array(reg['alpha_sweep'], dtype=np.float64)
         sweep_mode = True
+    alpha_scaling = reg['alpha_scaling']
+    filter_form = reg['filter_form']
     if cv_enabled:
         print(
             f"  Regularization: CV mode (alpha_mode="
             f"{cv_cfg['alpha_mode']!r}, k_folds={cv_cfg['k_folds']}, "
-            f"seed={cv_cfg['seed']}) over alpha grid "
-            f"{alphas.tolist()}"
+            f"seed={cv_cfg['seed']}, norm_weight={cv_cfg['norm_weight']:g}) "
+            f"over alpha grid {alphas.tolist()}"
         )
+        if cv_cfg['norm_weight'] == 0:
+            print(
+                "    NOTE: norm_weight=0 gives the pure held-out prediction "
+                "score, which under-regularizes at ill-conditioned "
+                "frequencies."
+            )
     else:
         print(
             f"  Regularization: {'sweep' if sweep_mode else 'scalar'} "
             f"with alphas = {alphas.tolist()}"
         )
+    if filter_form == 'lavrentiev':
+        print(
+            "  Filter: lavrentiev  g = 1/(sigma + alpha)  "
+            "(paper eq. 21 as printed; alpha ~ sigma)"
+        )
+    else:
+        print(
+            "  Filter: tikhonov  g = sigma/(sigma^2 + alpha)  "
+            "(minimizer of eq. 19; alpha ~ sigma^2)"
+        )
+    print(f"  Alpha scaling: {alpha_scaling}", end='')
+    if alpha_scaling == 'absolute':
+        print(
+            "  (values used as given; consider 'relative' for a band "
+            "spanning resonances)"
+        )
+    else:
+        p = 1 if filter_form == 'lavrentiev' else 2
+        print(f"  (alpha = value * sigma_max(T_r(f))**{p} per frequency)")
     print(f"  PSD eigenvalue clip threshold (relative): {reg['psd_tol_rel']}")
 
     solver = CPSDInverseSolver(T_r, pod_basis=phi)
@@ -454,6 +532,10 @@ def run_inversion(config: Dict[str, Any]) -> Dict[str, Any]:
         'row_indices': None if row_idx is None else row_idx.tolist(),
         'n_sensors_full': int(n_sensors_full),
         'alphas_per_freq': None,
+        'alpha_scaling': alpha_scaling,
+        'filter_form': filter_form,
+        'sigma_max_per_freq': [],
+        'alphas_effective': [],
         'cv': None,
     }
 
@@ -463,6 +545,9 @@ def run_inversion(config: Dict[str, Any]) -> Dict[str, Any]:
             k_folds=cv_cfg['k_folds'],
             seed=cv_cfg['seed'],
             save_fold_scores=cv_cfg['save_fold_scores'],
+            norm_weight=cv_cfg['norm_weight'],
+            alpha_scaling=alpha_scaling,
+            filter_form=filter_form,
         )
         print(
             f"  Running CV: {selector.k_folds} folds x "
@@ -491,6 +576,7 @@ def run_inversion(config: Dict[str, Any]) -> Dict[str, Any]:
             'k_folds': cv_cfg['k_folds'],
             'alpha_mode': cv_cfg['alpha_mode'],
             'seed': cv_cfg['seed'],
+            'norm_weight': float(cv_cfg['norm_weight']),
             'alpha_grid': alphas.tolist(),
             'alpha_star': alpha_star.tolist(),
             'scores': cv_scores,
@@ -507,17 +593,28 @@ def run_inversion(config: Dict[str, Any]) -> Dict[str, Any]:
         S_r, res = solver.solve_single_freq(
             f_idx, G[:, :, f_idx], alphas_this,
             psd_tol_rel=reg['psd_tol_rel'],
+            alpha_scaling=alpha_scaling,
+            filter_form=filter_form,
         )
         results['S_r'].append(S_r)
         results['residuals_rel'].append(res)
+
+        sigma_max_f = solver.sigma_max(f_idx)
+        alphas_eff = resolve_alphas(
+            alphas_this, sigma_max_f, alpha_scaling, filter_form
+        )
+        results['sigma_max_per_freq'].append(float(sigma_max_f))
+        results['alphas_effective'].append(alphas_eff.tolist())
 
         if frequencies is not None:
             tag = f"f = {frequencies[f_idx]:8.2f} Hz (idx {f_idx})"
         else:
             tag = f"freq idx {f_idx}"
         if cv_enabled:
+            eff = (f", alpha_eff={alphas_eff[0]:.2e}"
+                   if alpha_scaling == 'relative' else "")
             print(
-                f"  {tag} -> alpha*={alphas_this[0]:.2e}, "
+                f"  {tag} -> alpha*={alphas_this[0]:.2e}{eff}, "
                 f"refit residual {res[0]:.3e}"
             )
         elif sweep_mode:
@@ -569,6 +666,10 @@ def save_results(results: Dict[str, Any], config: Dict[str, Any]) -> None:
         'n_pod': int(results['S_r'][0].shape[0]),
         'sweep_mode': sweep_mode,
         'alphas': alphas.tolist(),
+        'alpha_scaling': results.get('alpha_scaling'),
+        'filter_form': results.get('filter_form'),
+        'sigma_max_per_freq': results.get('sigma_max_per_freq'),
+        'alphas_effective': results.get('alphas_effective'),
         'pod_basis_path': config['input']['pod_basis_path'],
         'transfer_matrix_path': config['input']['transfer_matrix_path'],
         'transfer_matrix_scale': float(config['input']['transfer_matrix_scale']),
@@ -591,6 +692,7 @@ def save_results(results: Dict[str, Any], config: Dict[str, Any]) -> None:
             'k_folds': cv_info['k_folds'],
             'alpha_mode': cv_info['alpha_mode'],
             'seed': cv_info['seed'],
+            'norm_weight': cv_info['norm_weight'],
             'alpha_grid': cv_info['alpha_grid'],
             'alpha_star': cv_info['alpha_star'],
         }
@@ -772,7 +874,7 @@ def _generate_cv_plots(
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Reduced-basis CPSD Tikhonov inversion driver'
+        description='Reduced-basis regularized CPSD inversion driver'
     )
     parser.add_argument(
         'config_file',
