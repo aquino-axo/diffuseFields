@@ -9,12 +9,18 @@ Implements only the correctness checks approved during planning:
 4. Box-vs-band switchover at BAND_FREQ_THRESHOLD.
 5. Config validation (box/error require validation; validation requires
    coordinates; .mat validation requires a variable name).
+6. Independent validation frequency grid: the diagonal loads unsliced and
+   its length is checked against the supplied grid; the point-by-point
+   comparison kinds and an index-based solution axis are both rejected;
+   the `lines` CSV is long format and carries each series' own grid.
 
 Plot rendering itself is smoke-tested (saves without error) rather than
 pixel-asserted.
 """
 
+import csv
 import sys
+import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -40,6 +46,20 @@ from run_plot_cpsd_diagonal import (
 )
 
 
+def _out_dir(tmp_path):
+    """
+    Resolve the directory a test may write to.
+
+    pytest ignores parameters that carry a default value, so `tmp_path=None`
+    is what these tests receive under pytest; falling back to '.' would litter
+    the repository root with fixtures. Allocate a real temporary directory
+    instead.
+    """
+    if tmp_path is not None:
+        return Path(tmp_path)
+    return Path(tempfile.mkdtemp(prefix='test_plot_cpsd_diagonal_'))
+
+
 def _hermitian_stack(n_loc, n_freq, rng):
     """Random (n_loc, n_loc, n_freq) Hermitian-per-frequency complex array."""
     A = (rng.standard_normal((n_loc, n_loc, n_freq))
@@ -54,7 +74,7 @@ def test_validation_extraction_and_slicing(tmp_path=None):
     n_loc, n_freq_full = 4, 7
     arr = _hermitian_stack(n_loc, n_freq_full, rng)
 
-    out = Path(tmp_path) if tmp_path else Path('.')
+    out = _out_dir(tmp_path)
     npy = out / 'val.npy'
     np.save(npy, arr)
 
@@ -219,7 +239,7 @@ def _base_config(**overrides):
 def test_config_validation(tmp_path=None):
     """Required-input rules for validation comparison."""
     print("Test 5: config validation...")
-    out = Path(tmp_path) if tmp_path else Path('.')
+    out = _out_dir(tmp_path)
     diag = out / 'd.npy'
     side = out / 's.json'
     np.save(diag, np.ones((3, 2)))
@@ -353,7 +373,7 @@ def _db_config(fig_path, top_n=None, per_sensor=True, save_csv=False):
 def test_per_sensor_cap_and_naming(tmp_path=None):
     """top_n caps per-sensor figures worst-first; files named sensor_<idx>."""
     print("Test 9: per-sensor cap + naming...")
-    out = Path(tmp_path) if tmp_path else Path('.')
+    out = _out_dir(tmp_path)
     freq = np.array([1.0, 2.0, 3.0])
     comp = np.ones((3, 3))
     meas = np.array([
@@ -386,7 +406,7 @@ def test_per_sensor_cap_and_naming(tmp_path=None):
 def test_config_validation_db(tmp_path=None):
     """validation_db requires validation; db_ref/db_floor must be positive."""
     print("Test 10: validation_db config validation...")
-    out = Path(tmp_path) if tmp_path else Path('.')
+    out = _out_dir(tmp_path)
     diag = out / 'd.npy'
     side = out / 's.json'
     np.save(diag, np.ones((3, 2)))
@@ -421,9 +441,214 @@ def test_config_validation_db(tmp_path=None):
     print("  ok")
 
 
-def run_all_tests() -> bool:
-    import tempfile
+# ---------------------------------------------------------------------------
+# Independent validation frequency grid
+# ---------------------------------------------------------------------------
 
+# Sideset face centroids used by the independent-grid end-to-end tests; the
+# first two are selected by coordinate, in that order.
+_CENTROIDS = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]]
+
+
+def _val_with_diagonal(diag: np.ndarray) -> np.ndarray:
+    """(n_loc, n_loc, n_freq) Hermitian array with the given real diagonal."""
+    n_loc, n_freq = diag.shape
+    arr = np.zeros((n_loc, n_loc, n_freq), dtype=complex)
+    for f in range(n_freq):
+        arr[:, :, f] = np.diag(diag[:, f].astype(float))
+    return arr
+
+
+def _indep_grid_config(out, n_freq_sol, n_freq_val, freq_spec,
+                       kind='lines', save_csv=True, sol_frequencies=True):
+    """Write solution/sidecar/validation files and build a matching config."""
+    import json
+
+    n_faces, n_loc = len(_CENTROIDS), 2
+    rng = np.random.default_rng(7)
+
+    diag = np.abs(rng.standard_normal((n_faces, n_freq_sol))) + 0.5
+    np.save(out / 'd_indep.npy', diag)
+
+    sidecar = {'mode': 'diagonal', 'freq_indices': list(range(n_freq_sol))}
+    if sol_frequencies:
+        sidecar['frequencies'] = [100.0 * (i + 1) for i in range(n_freq_sol)]
+    (out / 's_indep.json').write_text(json.dumps(sidecar))
+
+    val_diag = np.abs(rng.standard_normal((n_loc, n_freq_val))) + 0.5
+    np.save(out / 'v_indep.npy', _val_with_diagonal(val_diag))
+
+    exo = out / 'mesh.e'
+    exo.write_bytes(b'')  # existence only; the interpolator is faked
+
+    return {
+        'input': {
+            'diagonal_npy_path': str(out / 'd_indep.npy'),
+            'sidecar_json_path': str(out / 's_indep.json'),
+            'exodus_file': str(exo),
+            'sideset_id': 1,
+            'validation_path': str(out / 'v_indep.npy'),
+            'validation_var': None,
+            'validation_frequencies': freq_spec,
+        },
+        'selection': {
+            'indices': None,
+            'coordinates': [_CENTROIDS[0], _CENTROIDS[1]],
+            'match_tolerance': None,
+        },
+        'plot': {'kind': kind, 'log_scale': True, 'figsize': [6, 4]},
+        'output': {
+            'figure_path': str(out / 'indep.png'),
+            'dpi': 60,
+            'save_selection_csv': save_csv,
+        },
+    }
+
+
+def test_independent_grid_loads_unsliced(tmp_path=None):
+    """freq_indices=None keeps every validation frequency; length is checked."""
+    print("Test 11: independent grid loads unsliced...")
+    out = _out_dir(tmp_path)
+    rng = np.random.default_rng(11)
+    n_loc, n_freq_val = 3, 9
+    arr = _hermitian_stack(n_loc, n_freq_val, rng)
+    npy = out / 'val_indep.npy'
+    np.save(npy, arr)
+
+    val_diag = load_validation_diagonal(str(npy), None, None)
+
+    expected = np.real(
+        np.stack([np.diag(arr[:, :, f]) for f in range(n_freq_val)], axis=1)
+    )
+    assert val_diag.shape == (n_loc, n_freq_val), val_diag.shape
+    assert np.allclose(val_diag, expected)
+
+    # A frequency vector whose length disagrees with the validation array is
+    # rejected: 5 frequencies against 9 stored.
+    cfg = _indep_grid_config(out, n_freq_sol=4, n_freq_val=9,
+                             freq_spec=[10.0, 20.0, 30.0, 40.0, 50.0])
+    with _fake_interpolator(_CENTROIDS):
+        try:
+            rp.run(validate_config(cfg))
+            raise AssertionError("expected ValueError for length mismatch")
+        except ValueError as e:
+            assert '9' in str(e) and '5' in str(e), str(e)
+    print("  ok")
+
+
+def test_config_rejects_comparison_kinds_on_independent_grid(tmp_path=None):
+    """box/error/validation_db need a shared grid; lines does not."""
+    print("Test 12: comparison kinds rejected on independent grid...")
+    out = _out_dir(tmp_path)
+    f_val = [150.0, 250.0, 350.0]
+
+    for kind in ('box', 'error', 'validation_db'):
+        cfg = _indep_grid_config(out, 4, 3, f_val, kind=kind)
+        try:
+            validate_config(cfg)
+            raise AssertionError(f"expected ValueError for kind '{kind}'")
+        except ValueError as e:
+            msg = str(e)
+            assert kind in msg, msg
+            assert 'validation_frequencies' in msg, msg
+
+    # A mixed list is rejected too, naming only the offending kinds.
+    cfg = _indep_grid_config(out, 4, 3, f_val, kind=['lines', 'error'])
+    try:
+        validate_config(cfg)
+        raise AssertionError("expected ValueError for ['lines', 'error']")
+    except ValueError as e:
+        assert 'error' in str(e), str(e)
+
+    # 'lines' alone is accepted.
+    cfg = _indep_grid_config(out, 4, 3, f_val, kind='lines')
+    assert validate_config(cfg)['plot']['kind'] == ['lines']
+
+    # validation_frequencies without a validation file is a configuration
+    # error, not a silently ignored field.
+    cfg = _indep_grid_config(out, 4, 3, f_val, kind='lines')
+    cfg['input']['validation_path'] = None
+    try:
+        validate_config(cfg)
+        raise AssertionError("expected ValueError: freqs without validation")
+    except ValueError as e:
+        assert 'validation_path' in str(e), str(e)
+    print("  ok")
+
+
+def test_config_rejects_index_axis_with_independent_grid(tmp_path=None):
+    """An index-based solution axis cannot be overlaid with Hz."""
+    print("Test 13: index axis rejected on independent grid...")
+    out = _out_dir(tmp_path)
+    # n_freq_val > n_freq_sol, so the shared-grid slicing path would succeed
+    # here; only the index-axis guard can make this raise.
+    f_val = [150.0, 250.0, 350.0, 450.0, 550.0, 650.0]
+    cfg = _indep_grid_config(out, 4, 6, f_val, sol_frequencies=False)
+    with _fake_interpolator(_CENTROIDS):
+        try:
+            rp.run(validate_config(cfg))
+            raise AssertionError("expected ValueError for index frequency axis")
+        except ValueError as e:
+            msg = str(e)
+            assert 'validation_frequencies' in msg, msg
+            assert 'index' in msg, msg
+    print("  ok")
+
+
+def test_lines_long_format_csv(tmp_path=None):
+    """The lines CSV is long format and carries each series' own grid."""
+    print("Test 14: lines long-format CSV...")
+    out = _out_dir(tmp_path)
+    n_freq_sol, n_freq_val, n_loc = 4, 6, 2
+    f_sol = [100.0, 200.0, 300.0, 400.0]
+    f_val = [150.0, 250.0, 350.0, 450.0, 550.0, 650.0]
+
+    cfg = _indep_grid_config(out, n_freq_sol, n_freq_val, f_val)
+    with _fake_interpolator(_CENTROIDS):
+        rp.run(validate_config(cfg))
+
+    fig_path = Path(cfg['output']['figure_path'])
+    assert fig_path.exists()
+
+    with open(fig_path.with_suffix('.csv'), newline='') as f:
+        rows = list(csv.reader(f))
+
+    assert rows[0] == ['series', 'frequency', 'index', 'label', 'value'], rows[0]
+    body = rows[1:]
+    assert len(body) == n_loc * (n_freq_sol + n_freq_val), len(body)
+
+    sol = [r for r in body if r[0] == 'solution']
+    val = [r for r in body if r[0] == 'validation']
+    assert len(sol) == n_loc * n_freq_sol
+    assert len(val) == n_loc * n_freq_val
+
+    # Each series reports its own frequency grid, not the other's.
+    assert sorted({float(r[1]) for r in sol}) == f_sol
+    assert sorted({float(r[1]) for r in val}) == f_val
+
+    # Both selected faces appear in each series.
+    assert sorted({int(r[2]) for r in sol}) == [0, 1]
+    assert sorted({int(r[2]) for r in val}) == [0, 1]
+    assert all(float(r[4]) > 0 for r in body)
+
+    # Without a validation file the same long layout holds, solution only.
+    cfg2 = _indep_grid_config(out, n_freq_sol, n_freq_val, None)
+    cfg2['input']['validation_path'] = None
+    cfg2['input']['validation_frequencies'] = None
+    cfg2['selection'] = {'indices': [0, 1], 'coordinates': None,
+                         'match_tolerance': None}
+    cfg2['output']['figure_path'] = str(out / 'sol_only.png')
+    rp.run(validate_config(cfg2))
+    with open((out / 'sol_only.png').with_suffix('.csv'), newline='') as f:
+        rows2 = list(csv.reader(f))
+    assert rows2[0] == ['series', 'frequency', 'index', 'label', 'value']
+    assert len(rows2) - 1 == n_loc * n_freq_sol
+    assert {r[0] for r in rows2[1:]} == {'solution'}
+    assert sorted({float(r[1]) for r in rows2[1:]}) == f_sol
+    print("  ok")
+
+
+def run_all_tests() -> bool:
     print("=" * 60)
     print("Running CPSD Diagonal Plotting Tests")
     print("=" * 60)
@@ -438,6 +663,10 @@ def run_all_tests() -> bool:
         test_pooled_and_per_sensor_stats,
         test_per_sensor_cap_and_naming,
         test_config_validation_db,
+        test_independent_grid_loads_unsliced,
+        test_config_rejects_comparison_kinds_on_independent_grid,
+        test_config_rejects_index_axis_with_independent_grid,
+        test_lines_long_format_csv,
     ]
     passed = failed = 0
     for t in tests:

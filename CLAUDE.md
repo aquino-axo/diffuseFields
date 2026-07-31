@@ -76,6 +76,15 @@ No build step or package manager required. Dependencies: NumPy, SciPy, Matplotli
 
 **run_cpsd_inverse.py** - Config-driven driver (`config_cpsd_inverse.json`). Key `regularization` settings: `alpha`/`alpha_sweep`, `psd_tol_rel`, `alpha_scaling`, `filter_form`; `cv` settings: `enabled`, `k_folds`, `alpha_mode`, `seed`, `norm_weight`. Writes per-frequency `.npz`, `summary.json` (incl. `alpha_scaling`, `filter_form`, `sigma_max_per_freq`, `alphas_effective`), `cv_results.npz`, and diagnostic plots. Full pipeline walkthrough in `docs/cpsd_inversion_guide.md`.
 
+**frequency_spec.py** - Shared parsing of frequency-vector specs, used by `run_cpsd_inverse.py` (`physics.frequencies`) and `run_plot_cpsd_diagonal.py` (`input.validation_frequencies`):
+- `parse_frequency_spec(spec, field_name)` accepts a list or `{min, step, max}` (expanded inclusively of `max` when it lands on a step, otherwise stopping below it); `load_frequency_spec` additionally accepts a path to a 1-D `.npy` or single-variable `.mat`
+- `field_name` is the caller's dotted config path and is interpolated into every error message. The other drivers (`run_cone_analysis.py`, `run_total_field.py`) still carry their own `parse_frequencies` copies
+
+**run_plot_cpsd_diagonal.py** - Plots the uplifted CPSD diagonal vs frequency, optionally overlaid with validation data (`config_plot_cpsd_diagonal.json`). Kinds: `lines`, `box`, `error`, `validation_db`. The validation frequency axis has two modes:
+- **Shared grid** (default): the validation array spans the inversion's full frequency set and is sliced by the sidecar's `freq_indices`; all four kinds available
+- **Independent grid** (`input.validation_frequencies` set): validation carries its own frequency vector, nothing is sliced, and each series is drawn against its own frequencies. `box`/`error`/`validation_db` pair the spectra point by point, so they are **rejected** in this mode — deliberately not resolved by interpolating the measurement onto the solution's grid. Also requires a sidecar carrying `frequencies` (an index x-axis cannot be overlaid with Hz)
+- The `lines` CSV is long format (`series,frequency,index,label,value`) in both modes
+
 ## Key Physics
 
 The diffuse field is modeled as superposition of N plane waves:

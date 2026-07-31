@@ -45,6 +45,7 @@ from cpsd_inverse import (
     resolve_alphas,
 )
 from cpsd_inverse_cv import KFoldCVSelector
+from frequency_spec import parse_frequency_spec
 
 
 def load_config(config_path: str) -> Dict[str, Any]:
@@ -55,37 +56,7 @@ def load_config(config_path: str) -> Dict[str, Any]:
 
 def parse_frequencies(freq_config: Any) -> List[float]:
     """Parse a list or a {min, step, max} dict into a list of frequencies."""
-    if isinstance(freq_config, list):
-        if len(freq_config) == 0:
-            raise ValueError("physics.frequencies list cannot be empty")
-        for f in freq_config:
-            if not isinstance(f, (int, float)) or f <= 0:
-                raise ValueError(
-                    f"all frequencies must be positive numbers, got {f}"
-                )
-        return [float(f) for f in freq_config]
-
-    if isinstance(freq_config, dict):
-        for key in ('min', 'step', 'max'):
-            if key not in freq_config:
-                raise ValueError(
-                    f"physics.frequencies dict missing key '{key}'"
-                )
-        f_min = freq_config['min']
-        f_step = freq_config['step']
-        f_max = freq_config['max']
-        if f_min <= 0 or f_step <= 0 or f_max <= 0:
-            raise ValueError("physics.frequencies values must be positive")
-        if f_max < f_min:
-            raise ValueError("physics.frequencies.max must be >= min")
-        freqs = np.arange(f_min, f_max + f_step * 0.001, f_step)
-        freqs = freqs[freqs <= f_max + 1e-10]
-        return freqs.tolist()
-
-    raise ValueError(
-        f"physics.frequencies must be a list or a dict with min/step/max, "
-        f"got {type(freq_config).__name__}"
-    )
+    return parse_frequency_spec(freq_config, 'physics.frequencies').tolist()
 
 
 def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:

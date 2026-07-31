@@ -36,6 +36,18 @@ The ``box``, ``error`` and ``validation_db`` kinds require a validation file.
 A validation file requires the selection to be given as ``coordinates``
 (validation row k is aligned to the k-th coordinate).
 
+The validation data's frequency axis is handled in one of two modes:
+
+  * **Shared grid** (``input.validation_frequencies`` unset, the default). The
+    validation array spans the full frequency set used in the inversion and is
+    sliced with the sidecar's ``freq_indices``. All four kinds are available.
+  * **Independent grid** (``input.validation_frequencies`` set to a path, an
+    inline list, or ``{min, step, max}``). The validation data carries its own
+    frequency vector and is not sliced; each series is drawn against its own
+    frequencies. Because ``box``, ``error`` and ``validation_db`` pair the two
+    spectra point by point, they are rejected in this mode rather than papered
+    over by interpolating the measurement onto the solution's grid.
+
 Usage:
     python run_plot_cpsd_diagonal.py config_plot_cpsd_diagonal.json
 """
@@ -51,11 +63,25 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.io import loadmat
 
+from frequency_spec import load_frequency_spec
+
 # Above this many frequencies, the box kind renders percentile bands instead
 # of discrete side-by-side boxes (which would be unreadable).
 BAND_FREQ_THRESHOLD = 40
 
 VALID_KINDS = ('lines', 'box', 'error', 'validation_db')
+
+# Kinds that pair the solution and the validation data point-by-point, and so
+# require both to be sampled on the same frequencies.
+SHARED_GRID_KINDS = ('box', 'error', 'validation_db')
+
+# Frequency-axis labels; also used to tell the two axis kinds apart.
+FREQ_HZ_LABEL = 'Frequency [Hz]'
+FREQ_INDEX_LABEL = 'Frequency index'
+
+# Long-format header for the `lines` CSV. Long rather than wide because the
+# solution and the validation data may sample different frequencies.
+LINES_CSV_HEADER = ('series', 'frequency', 'index', 'label', 'value')
 
 # On the combined validation_db overlay, show the per-sensor colour legend only
 # when the sensor count is at or below this; above it, only the computed/
@@ -89,6 +115,7 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
             'sideset_id': None,
             'validation_path': None,
             'validation_var': None,
+            'validation_frequencies': None,
         },
         'selection': {
             'indices': None,
@@ -162,6 +189,12 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
                 "input.validation_var is required when input.validation_path "
                 "is a .mat file"
             )
+    elif inp['validation_frequencies'] is not None:
+        raise ValueError(
+            "input.validation_frequencies was supplied without "
+            "input.validation_path; there is no validation data to place on "
+            "that grid"
+        )
 
     # --- plot kinds -------------------------------------------------------
     kind = config['plot']['kind']
@@ -175,11 +208,17 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
             )
     config['plot']['kind'] = kinds  # normalise to list
 
-    needs_validation = [k for k in kinds if k in ('box', 'error',
-                                                   'validation_db')]
+    needs_validation = [k for k in kinds if k in SHARED_GRID_KINDS]
     if needs_validation and not has_validation:
         raise ValueError(
             f"plot kinds {needs_validation} require input.validation_path"
+        )
+    if needs_validation and inp['validation_frequencies'] is not None:
+        raise ValueError(
+            f"plot kinds {needs_validation} require the validation data on the "
+            f"solution's frequency grid, but input.validation_frequencies was "
+            f"supplied (independent grid). Use kind 'lines', or drop "
+            f"input.validation_frequencies."
         )
 
     plot_cfg = config['plot']
@@ -308,10 +347,10 @@ def load_diagonal_data(
     frequencies = sidecar.get('frequencies')
     if frequencies is not None and len(frequencies) == diag.shape[1]:
         freq_axis = np.asarray(frequencies, dtype=float)
-        xlabel = 'Frequency [Hz]'
+        xlabel = FREQ_HZ_LABEL
     else:
         freq_axis = np.asarray(freq_indices, dtype=float)
-        xlabel = 'Frequency index'
+        xlabel = FREQ_INDEX_LABEL
 
     return diag, freq_axis, xlabel, [int(i) for i in freq_indices]
 
@@ -331,18 +370,21 @@ def _load_array(path: str, var: Optional[str]) -> np.ndarray:
 
 
 def load_validation_diagonal(
-    path: str, var: Optional[str], freq_indices: List[int]
+    path: str, var: Optional[str], freq_indices: Optional[List[int]]
 ) -> np.ndarray:
     """
-    Load the validation full CPSD ``(n_loc, n_loc, n_freq_full)`` complex,
-    extract its real diagonal, and slice it to the reconstructed frequency
-    indices.
+    Load the validation full CPSD ``(n_loc, n_loc, n_freq_full)`` complex and
+    extract its real diagonal.
+
+    With ``freq_indices`` given (shared-grid mode) the diagonal is sliced to
+    those reconstructed frequency indices. With ``freq_indices=None``
+    (independent-grid mode) the validation data carries its own frequency
+    vector, so every stored frequency is returned unsliced.
 
     Returns
     -------
     val_diag : ndarray, shape (n_loc, n_freq), real
-        Row k is the autopower spectrum of validation location k at the
-        reconstructed frequencies.
+        Row k is the autopower spectrum of validation location k.
     """
     arr = _load_array(path, var)
     if arr.ndim != 3 or arr.shape[0] != arr.shape[1]:
@@ -350,6 +392,11 @@ def load_validation_diagonal(
             "Validation CPSD must have shape (n_loc, n_loc, n_freq_full); got "
             f"{arr.shape}"
         )
+
+    # diagonal over the first two axes -> (n_freq_full, n_loc); make (n_loc, f)
+    diag_full = np.diagonal(arr, axis1=0, axis2=1).real.T
+    if freq_indices is None:
+        return diag_full
 
     n_freq_full = arr.shape[2]
     max_idx = max(freq_indices)
@@ -359,9 +406,6 @@ def load_validation_diagonal(
             f"references frequency index {max_idx}; validation must span the "
             "full frequency set used in the inversion."
         )
-
-    # diagonal over the first two axes -> (n_freq_full, n_loc); make (n_loc, f)
-    diag_full = np.diagonal(arr, axis1=0, axis2=1).real.T
     return diag_full[:, freq_indices]
 
 
@@ -477,11 +521,18 @@ def plot_lines(
     xlabel: str,
     config: Dict[str, Any],
     fig_path: Path,
+    val_freq_axis: Optional[np.ndarray] = None,
 ) -> None:
-    """Per-location autopower vs frequency: solution solid, validation dashed."""
+    """
+    Per-location autopower vs frequency: solution solid, validation dashed.
+
+    ``val_freq_axis`` is the validation data's own frequency vector; ``None``
+    means it shares the solution's grid.
+    """
     plot_cfg = config['plot']
     out_cfg = config['output']
     prop_cycle = plt.rcParams['axes.prop_cycle'].by_key().get('color', None)
+    val_freq = freq_axis if val_freq_axis is None else val_freq_axis
 
     fig, ax = plt.subplots(figsize=tuple(plot_cfg['figsize']))
     plotter = ax.semilogy if plot_cfg['log_scale'] else ax.plot
@@ -489,7 +540,7 @@ def plot_lines(
         color = prop_cycle[k % len(prop_cycle)] if prop_cycle else None
         plotter(freq_axis, sol_sel[k, :], '-', color=color, label=label)
         if val_sel is not None:
-            plotter(freq_axis, val_sel[k, :], '--', color=color)
+            plotter(val_freq, val_sel[k, :], '--', color=color)
 
     ax.set_xlabel(plot_cfg['xlabel'] or xlabel)
     ax.set_ylabel(plot_cfg['ylabel'])
@@ -511,21 +562,20 @@ def plot_lines(
 
     if out_cfg['save_selection_csv']:
         csv_path = fig_path.with_suffix('.csv')
+        # Long format: each series carries its own frequency grid, so a shared
+        # frequency column would not be well defined.
         with open(csv_path, 'w', newline='') as f:
             writer = csv.writer(f)
-            header = [xlabel]
-            for idx, _ in selection:
-                header.append(f'sol_idx_{idx}')
-                if val_sel is not None:
-                    header.append(f'val_idx_{idx}')
-            writer.writerow(header)
-            for j, freq in enumerate(freq_axis):
-                row = [float(freq)]
-                for k, (idx, _) in enumerate(selection):
-                    row.append(float(sol_sel[k, j]))
-                    if val_sel is not None:
-                        row.append(float(val_sel[k, j]))
-                writer.writerow(row)
+            writer.writerow(LINES_CSV_HEADER)
+            series = [('solution', sol_sel, freq_axis)]
+            if val_sel is not None:
+                series.append(('validation', val_sel, val_freq))
+            for name, data, axis in series:
+                for k, (idx, label) in enumerate(selection):
+                    for j, freq in enumerate(axis):
+                        writer.writerow(
+                            [name, float(freq), idx, label, float(data[k, j])]
+                        )
         print(f"Saved CSV to {csv_path}")
 
 
@@ -934,9 +984,25 @@ def run(config: Dict[str, Any]) -> None:
     sol_sel = diag[sel_idx, :]
 
     val_sel = None
+    val_freq_axis = None
+    independent_grid = inp['validation_frequencies'] is not None
+    if independent_grid and xlabel == FREQ_INDEX_LABEL:
+        raise ValueError(
+            "input.validation_frequencies places the validation data on a "
+            "physical frequency axis, but the sidecar carries no 'frequencies' "
+            "so the solution is plotted against its frequency index. Add "
+            "'frequencies' to the sidecar, or drop "
+            "input.validation_frequencies."
+        )
+
     if has_validation:
+        if independent_grid:
+            val_freq_axis = load_frequency_spec(
+                inp['validation_frequencies'], 'input.validation_frequencies'
+            )
         val_diag = load_validation_diagonal(
-            inp['validation_path'], inp['validation_var'], freq_indices
+            inp['validation_path'], inp['validation_var'],
+            None if independent_grid else freq_indices,
         )
         if val_diag.shape[0] != len(selection):
             raise ValueError(
@@ -944,20 +1010,32 @@ def run(config: Dict[str, Any]) -> None:
                 f"{len(selection)} coordinates were selected; row k of the "
                 "validation data must align with coordinate k."
             )
-        if val_diag.shape[1] != sol_sel.shape[1]:
+        if independent_grid:
+            if val_diag.shape[1] != val_freq_axis.size:
+                raise ValueError(
+                    f"Validation holds {val_diag.shape[1]} frequencies but "
+                    f"input.validation_frequencies gives "
+                    f"{val_freq_axis.size}; the two must agree."
+                )
+        elif val_diag.shape[1] != sol_sel.shape[1]:
             raise ValueError(
                 f"Validation frequency count {val_diag.shape[1]} does not "
                 f"match solution {sol_sel.shape[1]} after slicing."
             )
         val_sel = val_diag
         print(f"Loaded validation diagonal: shape={val_diag.shape}")
+        if independent_grid:
+            print(
+                f"  validation on its own grid: "
+                f"[{val_freq_axis.min():.4g}, {val_freq_axis.max():.4g}]"
+            )
 
     n_kinds = len(kinds)
     for kind in kinds:
         fig_path = _kind_path(config['output'], kind, n_kinds)
         if kind == 'lines':
             plot_lines(sol_sel, val_sel, freq_axis, selection, xlabel,
-                       config, fig_path)
+                       config, fig_path, val_freq_axis=val_freq_axis)
         elif kind == 'box':
             plot_box(sol_sel, val_sel, freq_axis, xlabel, config, fig_path)
         elif kind == 'error':

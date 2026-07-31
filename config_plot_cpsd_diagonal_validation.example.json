@@ -5,7 +5,8 @@
         "exodus_file": "data/cube.e",
         "sideset_id": 6,
         "validation_path": "data/validation_cpsd.mat",
-        "validation_var": "G_val"
+        "validation_var": "G_val",
+        "validation_frequencies": null
     },
     "selection": {
         "indices": null,
