@@ -30,7 +30,8 @@ Three plot kinds are supported via `plot.kind` (a string or a list):
     cancels in the error, so it needs none). A combined "all sensors" figure
     is written to ``output.figure_path``; per-sensor figures go to a
     ``per_sensor/`` subdirectory (``output.per_sensor``), capped worst-first
-    by ``output.top_n``.
+    by ``output.top_n``. On an independent frequency grid only the top panel
+    is drawn (see below), and ``output.top_n`` then caps in selection order.
 
 The ``box``, ``error`` and ``validation_db`` kinds require a validation file.
 A validation file requires the selection to be given as ``coordinates``
@@ -44,9 +45,11 @@ The validation data's frequency axis is handled in one of two modes:
   * **Independent grid** (``input.validation_frequencies`` set to a path, an
     inline list, or ``{min, step, max}``). The validation data carries its own
     frequency vector and is not sliced; each series is drawn against its own
-    frequencies. Because ``box``, ``error`` and ``validation_db`` pair the two
-    spectra point by point, they are rejected in this mode rather than papered
-    over by interpolating the measurement onto the solution's grid.
+    frequencies. ``lines`` and ``validation_db`` both work here -- the latter
+    rendering its dB overlay panel alone, since the level error ``dL`` needs
+    paired frequencies. ``box`` and ``error`` difference the two spectra
+    outright and are rejected, rather than papered over by interpolating the
+    measurement onto the solution's grid.
 
 Usage:
     python run_plot_cpsd_diagonal.py config_plot_cpsd_diagonal.json
@@ -71,17 +74,23 @@ BAND_FREQ_THRESHOLD = 40
 
 VALID_KINDS = ('lines', 'box', 'error', 'validation_db')
 
-# Kinds that pair the solution and the validation data point-by-point, and so
-# require both to be sampled on the same frequencies.
+# Kinds that need a validation data set at all.
 SHARED_GRID_KINDS = ('box', 'error', 'validation_db')
+
+# Kinds that *difference* the two spectra and so need both on one grid: the
+# relative-L2 error, and the per-frequency distributions drawn side by side on
+# categorical positions. `validation_db` is deliberately absent — on an
+# independent grid it degrades to its dB overlay panel, which needs no pairing.
+DIFFERENCE_KINDS = ('box', 'error')
 
 # Frequency-axis labels; also used to tell the two axis kinds apart.
 FREQ_HZ_LABEL = 'Frequency [Hz]'
 FREQ_INDEX_LABEL = 'Frequency index'
 
-# Long-format header for the `lines` CSV. Long rather than wide because the
-# solution and the validation data may sample different frequencies.
+# Long-format headers, used when the solution and the validation data may
+# sample different frequencies so a shared frequency column is ill-defined.
 LINES_CSV_HEADER = ('series', 'frequency', 'index', 'label', 'value')
+DB_CSV_HEADER = ('series', 'frequency', 'index', 'label', 'level_db')
 
 # On the combined validation_db overlay, show the per-sensor colour legend only
 # when the sensor count is at or below this; above it, only the computed/
@@ -213,12 +222,14 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError(
             f"plot kinds {needs_validation} require input.validation_path"
         )
-    if needs_validation and inp['validation_frequencies'] is not None:
+    needs_one_grid = [k for k in kinds if k in DIFFERENCE_KINDS]
+    if needs_one_grid and inp['validation_frequencies'] is not None:
         raise ValueError(
-            f"plot kinds {needs_validation} require the validation data on the "
-            f"solution's frequency grid, but input.validation_frequencies was "
-            f"supplied (independent grid). Use kind 'lines', or drop "
-            f"input.validation_frequencies."
+            f"plot kinds {needs_one_grid} difference the solution against the "
+            f"validation data, so both must lie on one frequency grid, but "
+            f"input.validation_frequencies was supplied (independent grid). "
+            f"Drop those kinds ('lines' and 'validation_db' both work on "
+            f"independent grids), or drop input.validation_frequencies."
         )
 
     plot_cfg = config['plot']
@@ -506,9 +517,24 @@ def _kind_path(out_cfg: Dict[str, Any], kind: str, n_kinds: int) -> Path:
     return fig_path
 
 
+def _legend_outside(ax, **kwargs):
+    """
+    Place the legend just right of the axes instead of on top of the data.
+
+    With several sensors -- each contributing a colour entry, plus the
+    solid/dashed source key -- an in-axes legend covers the curves it is
+    labelling. Anchoring outside keeps the data area clear at any sensor count.
+    Figures are saved with ``bbox_inches='tight'`` so the legend is not clipped.
+    """
+    kwargs.setdefault('fontsize', 8)
+    return ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1.0),
+                     borderaxespad=0.0, **kwargs)
+
+
 def _save_fig(fig, fig_path: Path, dpi: int) -> None:
     fig_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(fig_path, dpi=dpi)
+    # bbox_inches='tight' so a legend anchored outside the axes is included.
+    fig.savefig(fig_path, dpi=dpi, bbox_inches='tight')
     plt.close(fig)
     print(f"Saved plot to {fig_path}")
 
@@ -550,13 +576,12 @@ def plot_lines(
     if plot_cfg['xlim'] is not None:
         ax.set_xlim(plot_cfg['xlim'])
     ax.grid(True, alpha=0.3)
-    if len(selection) <= 20:
-        ax.legend(loc='best', fontsize=8)
     if val_sel is not None:
         # Linestyle key independent of the per-location colour legend.
         ax.plot([], [], 'k-', label='solution')
         ax.plot([], [], 'k--', label='validation')
-        ax.legend(loc='best', fontsize=8)
+    if val_sel is not None or len(selection) <= 20:
+        _legend_outside(ax)
     fig.tight_layout()
     _save_fig(fig, fig_path, out_cfg['dpi'])
 
@@ -651,7 +676,7 @@ def plot_box(
     if plot_cfg['ylim'] is not None:
         ax.set_ylim(plot_cfg['ylim'])
     ax.grid(True, alpha=0.3)
-    ax.legend(loc='best', fontsize=8)
+    _legend_outside(ax)
     fig.tight_layout()
     _save_fig(fig, fig_path, out_cfg['dpi'])
 
@@ -788,6 +813,79 @@ def select_per_sensor_order(dL_all: np.ndarray, top_n: Optional[int]
     return order, 0
 
 
+def _draw_db_overlay(
+    ax,
+    l_comp: np.ndarray,
+    l_meas: np.ndarray,
+    sol_freq: np.ndarray,
+    val_freq: np.ndarray,
+    selection: List[Tuple[int, str]],
+    plot_cfg: Dict[str, Any],
+    title: str,
+    show_sensor_legend: bool,
+    single_sensor: bool,
+) -> None:
+    """
+    Draw the computed-vs-measured level overlay.
+
+    ``sol_freq`` and ``val_freq`` are per-series, so the two may be sampled on
+    different grids; this panel never pairs them.
+    """
+    prop_cycle = plt.rcParams['axes.prop_cycle'].by_key().get('color', None)
+
+    if single_sensor:
+        # One sensor: distinguish source by colour and linestyle.
+        ax.plot(sol_freq, l_comp[0], '-', color='tab:blue', label='computed')
+        ax.plot(val_freq, l_meas[0], '--', color='tab:orange', label='measured')
+    else:
+        # Many sensors: colour = sensor, linestyle = source.
+        for k, (idx, label) in enumerate(selection):
+            color = prop_cycle[k % len(prop_cycle)] if prop_cycle else None
+            ax.plot(sol_freq, l_comp[k], '-', color=color,
+                    label=(label if show_sensor_legend else None))
+            ax.plot(val_freq, l_meas[k], '--', color=color)
+        # Linestyle key independent of the per-sensor colour legend.
+        ax.plot([], [], 'k-', label='computed')
+        ax.plot([], [], 'k--', label='measured')
+
+    ax.set_ylabel(f"{plot_cfg['ylabel']} level [dB re {plot_cfg['db_ref']:g}]")
+    ax.set_title(title)
+    ax.grid(True, alpha=0.3)
+    _legend_outside(ax)
+    if plot_cfg['ylim'] is not None:
+        ax.set_ylim(plot_cfg['ylim'])
+
+
+def _draw_db_error(
+    ax,
+    dL: np.ndarray,
+    freq_axis: np.ndarray,
+    selection: List[Tuple[int, str]],
+    plot_cfg: Dict[str, Any],
+    stats: Tuple[float, float],
+    single_sensor: bool,
+) -> None:
+    """Draw the signed level-error panel and its max/median highlight box."""
+    prop_cycle = plt.rcParams['axes.prop_cycle'].by_key().get('color', None)
+
+    if single_sensor:
+        ax.plot(freq_axis, dL[0], '-', color='tab:red')
+    else:
+        for k in range(len(selection)):
+            color = prop_cycle[k % len(prop_cycle)] if prop_cycle else None
+            ax.plot(freq_axis, dL[k], '-', color=color)
+
+    ax.axhline(0.0, color='k', lw=0.8, alpha=0.6)
+    ax.set_ylabel(r'$S_{ii}$ error (measured $-$ computed) [dB]')
+    ax.grid(True, alpha=0.3)
+    max_abs, med_abs = stats
+    box_text = (f"max |error| = {max_abs:.2f} dB\n"
+                f"median |error| = {med_abs:.2f} dB")
+    ax.text(0.98, 0.95, box_text, transform=ax.transAxes,
+            ha='right', va='top', fontsize=9,
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.85))
+
+
 def _render_db_figure(
     sol: np.ndarray,
     val: np.ndarray,
@@ -798,64 +896,85 @@ def _render_db_figure(
     title: str,
     show_sensor_legend: bool,
     single_sensor: bool = False,
+    val_freq_axis: Optional[np.ndarray] = None,
 ):
     """
-    Draw a stacked overlay (top) + signed dB error (bottom) figure.
+    Draw the measured-vs-computed dB figure.
 
-    Returns ``(fig, (max_abs, median_abs), n_clamped)``.
+    On a shared grid this is the stacked overlay (top) + signed level error
+    (bottom) pair. When ``val_freq_axis`` is given the two spectra sample
+    different frequencies, so the level error is undefined: the figure is the
+    overlay panel alone and ``db_error`` is never called.
+
+    Returns ``(fig, stats, n_clamped)`` where ``stats`` is
+    ``(max_abs, median_abs)`` on a shared grid and ``None`` otherwise.
     """
     db_ref = plot_cfg['db_ref']
     db_floor = plot_cfg['db_floor']
     l_comp, nc1 = to_db(sol, db_ref, db_floor)
     l_meas, nc2 = to_db(val, db_ref, db_floor)
-    dL, _ = db_error(val, sol, db_floor)
-    max_abs, med_abs = db_error_stats(dL)
+    independent_grid = val_freq_axis is not None
+    val_freq = freq_axis if val_freq_axis is None else val_freq_axis
 
-    prop_cycle = plt.rcParams['axes.prop_cycle'].by_key().get('color', None)
-    fig, (ax_top, ax_err) = plt.subplots(
-        2, 1, sharex=True, figsize=tuple(plot_cfg['figsize'])
-    )
-
-    if single_sensor:
-        # One sensor: distinguish source by colour and linestyle.
-        ax_top.plot(freq_axis, l_comp[0], '-', color='tab:blue',
-                    label='computed')
-        ax_top.plot(freq_axis, l_meas[0], '--', color='tab:orange',
-                    label='measured')
-        ax_err.plot(freq_axis, dL[0], '-', color='tab:red')
+    if independent_grid:
+        fig, ax_top = plt.subplots(figsize=tuple(plot_cfg['figsize']))
+        ax_bottom = ax_top  # the overlay carries the x-axis labelling
+        stats = None
     else:
-        # Many sensors: colour = sensor, linestyle = source.
-        for k, (idx, label) in enumerate(selection):
-            color = prop_cycle[k % len(prop_cycle)] if prop_cycle else None
-            ax_top.plot(freq_axis, l_comp[k], '-', color=color,
-                        label=(label if show_sensor_legend else None))
-            ax_top.plot(freq_axis, l_meas[k], '--', color=color)
-            ax_err.plot(freq_axis, dL[k], '-', color=color)
-        # Linestyle key independent of the per-sensor colour legend.
-        ax_top.plot([], [], 'k-', label='computed')
-        ax_top.plot([], [], 'k--', label='measured')
+        fig, (ax_top, ax_err) = plt.subplots(
+            2, 1, sharex=True, figsize=tuple(plot_cfg['figsize'])
+        )
+        ax_bottom = ax_err
+        dL, _ = db_error(val, sol, db_floor)
+        stats = db_error_stats(dL)
 
-    ax_top.set_ylabel(f"{plot_cfg['ylabel']} level [dB re {db_ref:g}]")
-    ax_top.set_title(title)
-    ax_top.grid(True, alpha=0.3)
-    ax_top.legend(loc='best', fontsize=8)
-    if plot_cfg['ylim'] is not None:
-        ax_top.set_ylim(plot_cfg['ylim'])
+    _draw_db_overlay(ax_top, l_comp, l_meas, freq_axis, val_freq, selection,
+                     plot_cfg, title, show_sensor_legend, single_sensor)
+    if not independent_grid:
+        _draw_db_error(ax_err, dL, freq_axis, selection, plot_cfg, stats,
+                       single_sensor)
 
-    ax_err.axhline(0.0, color='k', lw=0.8, alpha=0.6)
-    ax_err.set_xlabel(plot_cfg['xlabel'] or xlabel)
-    ax_err.set_ylabel(r'$S_{ii}$ error (measured $-$ computed) [dB]')
-    ax_err.grid(True, alpha=0.3)
+    ax_bottom.set_xlabel(plot_cfg['xlabel'] or xlabel)
     if plot_cfg['xlim'] is not None:
-        ax_err.set_xlim(plot_cfg['xlim'])
-    box_text = (f"max |error| = {max_abs:.2f} dB\n"
-                f"median |error| = {med_abs:.2f} dB")
-    ax_err.text(0.98, 0.95, box_text, transform=ax_err.transAxes,
-                ha='right', va='top', fontsize=9,
-                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.85))
+        ax_bottom.set_xlim(plot_cfg['xlim'])
 
     fig.tight_layout()
-    return fig, (max_abs, med_abs), nc1 + nc2
+    return fig, stats, nc1 + nc2
+
+
+def _save_db_csv_long(
+    fig_path: Path,
+    sol_freq: np.ndarray,
+    val_freq: np.ndarray,
+    selection: List[Tuple[int, str]],
+    sol_sel: np.ndarray,
+    val_sel: np.ndarray,
+    plot_cfg: Dict[str, Any],
+) -> None:
+    """
+    Write the dB levels in long format, one row per (series, location, freq).
+
+    Used on an independent grid, where the two series sample different
+    frequencies so a shared frequency column is not well defined. No error
+    summary accompanies it: there is no level error to summarise.
+    """
+    db_ref = plot_cfg['db_ref']
+    db_floor = plot_cfg['db_floor']
+    l_comp, _ = to_db(sol_sel, db_ref, db_floor)
+    l_meas, _ = to_db(val_sel, db_ref, db_floor)
+
+    csv_path = fig_path.with_suffix('.csv')
+    with open(csv_path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(DB_CSV_HEADER)
+        for name, levels, axis in (('computed', l_comp, sol_freq),
+                                   ('measured', l_meas, val_freq)):
+            for k, (idx, label) in enumerate(selection):
+                for j, freq in enumerate(axis):
+                    writer.writerow(
+                        [name, float(freq), idx, label, float(levels[k, j])]
+                    )
+    print(f"Saved CSV to {csv_path}")
 
 
 def _save_db_csv(
@@ -911,38 +1030,69 @@ def plot_validation_db(
     xlabel: str,
     config: Dict[str, Any],
     fig_path: Path,
+    val_freq_axis: Optional[np.ndarray] = None,
 ) -> None:
-    """Combined + per-sensor dB overlay/error figures (measured vs computed)."""
+    """
+    Combined + per-sensor dB figures (measured vs computed).
+
+    ``val_freq_axis`` is the validation data's own frequency vector; ``None``
+    means it shares the solution's grid. On an independent grid the level
+    error is undefined, so each figure is the dB overlay panel alone.
+    """
     plot_cfg = config['plot']
     out_cfg = config['output']
     db_floor = plot_cfg['db_floor']
+    independent_grid = val_freq_axis is not None
 
-    # --- combined "all sensors" two-panel figure --------------------------
-    fig, (max_abs, med_abs), n_clamped = _render_db_figure(
+    # --- combined "all sensors" figure ------------------------------------
+    fig, stats, n_clamped = _render_db_figure(
         sol_sel, val_sel, freq_axis, selection, xlabel, plot_cfg,
         title=plot_cfg['title'],
         show_sensor_legend=(len(selection) <= COMBINED_LEGEND_MAX),
+        val_freq_axis=val_freq_axis,
     )
     if n_clamped:
         print(f"  db: clamped {n_clamped} non-positive/near-zero S_ii "
               f"sample(s) to the relative floor (plot.db_floor={db_floor:g})")
-    print(f"  combined dB error (pooled): max|dL|={max_abs:.3f} dB, "
-          f"median|dL|={med_abs:.3f} dB")
+    if stats is None:
+        print("  db: independent frequency grids -> overlay panel only; the "
+              "level error dL is undefined without paired frequencies")
+    else:
+        print(f"  combined dB error (pooled): max|dL|={stats[0]:.3f} dB, "
+              f"median|dL|={stats[1]:.3f} dB")
     _save_fig(fig, fig_path, out_cfg['dpi'])
 
     if out_cfg['save_selection_csv']:
-        _save_db_csv(fig_path, freq_axis, xlabel, selection, sol_sel, val_sel,
-                     plot_cfg)
+        if independent_grid:
+            _save_db_csv_long(fig_path, freq_axis, val_freq_axis, selection,
+                              sol_sel, val_sel, plot_cfg)
+        else:
+            _save_db_csv(fig_path, freq_axis, xlabel, selection, sol_sel,
+                         val_sel, plot_cfg)
 
-    # --- per-sensor two-panel figures -------------------------------------
+    # --- per-sensor figures -----------------------------------------------
     if not out_cfg['per_sensor']:
         return
-    dL_all, _ = db_error(val_sel, sol_sel, db_floor)
-    order, n_skipped = select_per_sensor_order(dL_all, out_cfg['top_n'])
-    if n_skipped:
-        print(f"  per-sensor: writing worst {len(order)} of "
-              f"{len(order) + n_skipped} figures (output.top_n); "
-              f"skipped {n_skipped}")
+    if independent_grid:
+        # No level error exists, so there is nothing to rank by: fall back to
+        # selection order and say so, lest a capped set read as "the worst N".
+        order = np.arange(len(selection))
+        n_skipped = 0
+        top_n = out_cfg['top_n']
+        if top_n is not None and top_n < len(order):
+            order, n_skipped = order[:top_n], len(order) - top_n
+        if n_skipped:
+            print(f"  per-sensor: writing the FIRST {len(order)} of "
+                  f"{len(order) + n_skipped} figures in selection order "
+                  f"(output.top_n); these are not ranked worst-first, because "
+                  f"no level error is defined on independent grids")
+    else:
+        dL_all, _ = db_error(val_sel, sol_sel, db_floor)
+        order, n_skipped = select_per_sensor_order(dL_all, out_cfg['top_n'])
+        if n_skipped:
+            print(f"  per-sensor: writing worst {len(order)} of "
+                  f"{len(order) + n_skipped} figures (output.top_n); "
+                  f"skipped {n_skipped}")
     subdir = fig_path.parent / 'per_sensor'
     for k in order:
         idx = selection[k][0]
@@ -952,6 +1102,7 @@ def plot_validation_db(
             xlabel, plot_cfg,
             title=f"Sensor {idx}: measured vs computed",
             show_sensor_legend=False, single_sensor=True,
+            val_freq_axis=val_freq_axis,
         )
         _save_fig(fig_k, sub_path, out_cfg['dpi'])
     if len(order):
@@ -1042,7 +1193,7 @@ def run(config: Dict[str, Any]) -> None:
             plot_error(sol_sel, val_sel, selection, config, fig_path)
         elif kind == 'validation_db':
             plot_validation_db(sol_sel, val_sel, freq_axis, selection, xlabel,
-                               config, fig_path)
+                               config, fig_path, val_freq_axis=val_freq_axis)
 
 
 def main():

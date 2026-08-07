@@ -712,7 +712,7 @@ list of strings):
 | `"lines"` | Per-location autopower `S_ii(f)` vs frequency. With a validation set, the inverse solution is drawn **solid** and the validation data **dashed**, sharing one colour per location. The only kind that supports the two series on **different frequency grids** (see `input.validation_frequencies`). | No (overlay added if present) |
 | `"box"` | At each frequency, the distribution of `S_ii(f)` **across the selected locations** as side-by-side boxes (solution vs validation). Box = 25–75th percentile, whiskers = 5th/95th. Above `BAND_FREQ_THRESHOLD` (40) frequencies it auto-switches to median + shaded percentile bands. | Yes |
 | `"error"` | Per-location relative-L2 error of the solution autopower spectrum against the validation spectrum, `‖Sᵢᵢˢᵒˡ − Sᵢᵢᵛᵃˡ‖₂ / ‖Sᵢᵢᵛᵃˡ‖₂`, as a bar chart sorted worst → best. Use it to rank which sensors the inversion reproduces best/worst. | Yes |
-| `"validation_db"` | Stacked two-panel **decibel** comparison. *Top:* level `L = 10·log10(Sᵢᵢ / db_ref)` in dB, **computed** (solid) vs **measured** (dashed); colour = sensor, with the per-sensor legend shown only for ≤ `COMBINED_LEGEND_MAX` (10) sensors. *Bottom:* signed level error `ΔL = 10·log10(S_meas / S_comp)` per location, with a highlight box giving `max\|ΔL\|` and `median\|ΔL\|` (the dB reference cancels in `ΔL`, so it needs none). Emits a combined "all sensors" figure **and** per-sensor figures. | Yes |
+| `"validation_db"` | Stacked two-panel **decibel** comparison. *Top:* level `L = 10·log10(Sᵢᵢ / db_ref)` in dB, **computed** (solid) vs **measured** (dashed); colour = sensor, with the per-sensor legend shown only for ≤ `COMBINED_LEGEND_MAX` (10) sensors. *Bottom:* signed level error `ΔL = 10·log10(S_meas / S_comp)` per location, with a highlight box giving `max\|ΔL\|` and `median\|ΔL\|` (the dB reference cancels in `ΔL`, so it needs none). Emits a combined "all sensors" figure **and** per-sensor figures. On an **independent frequency grid** only the top panel is drawn — `ΔL` needs paired frequencies. | Yes |
 
 Passing a list (e.g. `["lines", "box", "error", "validation_db"]`) produces
 all of them in one run; see the output-naming note below.
@@ -753,14 +753,29 @@ The `box`, `error`, and `validation_db` kinds require a validation set;
 `lines` works with or without one (without it, the original solution-only
 line plot).
 
-Those three kinds also pair the two spectra **point by point** — a
-per-frequency percentile, a relative-L2 error, a signed level error — so they
-are available in shared-grid mode only. Requesting any of them together with
-`validation_frequencies` is rejected up front rather than resolved by
-interpolating the measurement onto the solution's grid: a resampled
-"measurement" invites reading interpolation artifacts as physics. To compare
-numerically across differing grids, resample deliberately upstream and feed
-the result in as a shared-grid validation set.
+On an **independent grid**, which kinds work follows from whether they
+*difference* the two spectra:
+
+| Kind | Independent grid? | Why |
+| --- | --- | --- |
+| `lines` | Yes | Two overlaid curves; no pairing |
+| `validation_db` | Yes, **overlay panel only** | The top dB panel is two curves. The bottom `ΔL = 10·log10(S_meas/S_comp)` panel is a ratio at one frequency, so it is omitted — along with the `max\|ΔL\|`/`median\|ΔL\|` box and `*_error_stats.csv` |
+| `box` | No | Side-by-side boxes sit on categorical per-frequency positions |
+| `error` | No | `‖Sˢᵒˡ − Sᵛᵃˡ‖₂ / ‖Sᵛᵃˡ‖₂` is a pointwise difference |
+
+Requesting `box` or `error` with `validation_frequencies` is rejected up front
+rather than resolved by interpolating the measurement onto the solution's grid:
+a resampled "measurement" invites reading interpolation artifacts as physics.
+On independent grids `run_plot_cpsd_diagonal.py` never calls `db_error`, so no
+reported number can come from an interpolated sample. To compare numerically
+across differing grids, resample deliberately upstream and feed the result in
+as a shared-grid validation set.
+
+Two further consequences in independent-grid mode: the `validation_db` CSV
+switches to long format (`series,frequency,index,label,level_db`), and
+`output.top_n` — normally "the N worst sensors" — degrades to "the first N
+selected", since there is no error to rank by. The driver prints this on every
+such run.
 
 The solution's own x-axis must be physical for an independent-grid overlay to
 mean anything, so a sidecar without `frequencies` (which puts the solution on
@@ -822,7 +837,7 @@ python src/run_plot_cpsd_diagonal.py config_plot_cpsd_diagonal.json
 | `input.exodus_file` / `input.sideset_id` | **Required if `selection.coordinates` is provided** (i.e. always, when a validation set is used) — used to compute centroids. |
 | `input.validation_path` | Optional `.npy`/`.mat` holding the validation full CPSD `(n_loc, n_loc, n_freq_full)`, complex. Enables the solution-vs-data overlay and is **required** for `box`/`error`/`validation_db`. |
 | `input.validation_var` | Variable name inside the `.mat`; **required** for `.mat`, ignored for `.npy`. |
-| `input.validation_frequencies` | Optional. The validation data's **own** frequency vector, switching the driver to independent-grid mode. Accepts a path to a 1-D array (`.npy`, or a single-variable `.mat`), an inline list `[10, 15, 20]`, or `{"min": 10, "step": 5, "max": 30}` (same forms as `physics.frequencies` in Step 2). Its length must equal the validation array's third dimension. Requires `validation_path`, requires a sidecar carrying `frequencies`, and restricts `plot.kind` to `"lines"`. `null` (default) ⇒ shared-grid mode. |
+| `input.validation_frequencies` | Optional. The validation data's **own** frequency vector, switching the driver to independent-grid mode. Accepts a path to a 1-D array (`.npy`, or a single-variable `.mat`), an inline list `[10, 15, 20]`, or `{"min": 10, "step": 5, "max": 30}` (same forms as `physics.frequencies` in Step 2). Its length must equal the validation array's third dimension. Requires `validation_path`, requires a sidecar carrying `frequencies`, and restricts `plot.kind` to `"lines"` and `"validation_db"` (the latter drawing its overlay panel only). `null` (default) ⇒ shared-grid mode. |
 | `selection.indices` | List of non-negative ints, or `"all"` to plot every entry. Allowed only when no validation set is given. |
 | `selection.coordinates` | List of `[x, y, z]` triples; each maps to the nearest sideset face centroid. **Required when a validation set is given** (row-by-row alignment). |
 | `selection.match_tolerance` | Optional positive number; if set, a coordinate whose nearest centroid is farther than this raises an error (guards against misregistered validation coordinates). `null` ⇒ informational distance print only. |
@@ -834,8 +849,8 @@ python src/run_plot_cpsd_diagonal.py config_plot_cpsd_diagonal.json
 | `plot.db_ref` | `validation_db` only. Positive reference in `L = 10·log10(Sᵢᵢ / db_ref)`. Default `1.0` (dB re 1 unit²/Hz); set to `(20e-6)**2` if the data is genuinely Pa²/Hz. The reference **cancels** in the `ΔL` error panel. |
 | `plot.db_floor` | `validation_db` only. Positive relative floor: each location is clamped to `db_floor × (that location's peak)` before the log, so a vanishing/negative `Sᵢᵢ` yields a bounded level instead of `−inf`. Default `1e-12` (≈ −120 dB below peak). Clamped-sample counts are logged. |
 | `output.figure_path` | Parent directories created automatically; `figure_format` is added if no suffix is present. When multiple kinds run, a `_lines`/`_box`/`_error`/`_validation_db` suffix is inserted into the stem (single-kind runs keep the bare path). For `validation_db` this path is the combined "all sensors" figure. |
-| `output.save_selection_csv` | When `true`, writes a sibling `.csv` per kind: `lines` ⇒ **long format**, columns `series,frequency,index,label,value` with `series` ∈ {`solution`, `validation`}, so each series carries its own frequency grid; `box` ⇒ per-frequency percentiles (5/25/50/75/95) for both series; `error` ⇒ ranked per-location errors; `validation_db` ⇒ per-frequency `Lcomp`/`Lmeas`/`ΔL` columns plus a `*_error_stats.csv` with per-sensor and pooled `max\|ΔL\|` / `median\|ΔL\|`. |
-| `output.top_n` | Optional positive int. For `error`, show only the worst `N` locations. For `validation_db`, cap the number of **per-sensor** figures written (worst-error first); the skipped count is logged. `null` ⇒ all. |
+| `output.save_selection_csv` | When `true`, writes a sibling `.csv` per kind: `lines` ⇒ **long format**, columns `series,frequency,index,label,value` with `series` ∈ {`solution`, `validation`}, so each series carries its own frequency grid; `box` ⇒ per-frequency percentiles (5/25/50/75/95) for both series; `error` ⇒ ranked per-location errors; `validation_db` ⇒ per-frequency `Lcomp`/`Lmeas`/`ΔL` columns plus a `*_error_stats.csv` with per-sensor and pooled `max\|ΔL\|` / `median\|ΔL\|` — on an independent grid this becomes long format (`series,frequency,index,label,level_db`) with **no** error-stats file. |
+| `output.top_n` | Optional positive int. For `error`, show only the worst `N` locations. For `validation_db`, cap the number of **per-sensor** figures written (worst-error first); the skipped count is logged. On an independent frequency grid there is no error to rank by, so it caps in **selection order** instead — the driver prints this. `null` ⇒ all. |
 | `output.per_sensor` | `validation_db` only. When `true` (default), also write one two-panel figure per selected sensor to a `per_sensor/` subdirectory beside `figure_path`, named `sensor_<faceidx>.<fmt>`. Set `false` to emit only the combined figure. |
 
 ### Coordinate → row resolution

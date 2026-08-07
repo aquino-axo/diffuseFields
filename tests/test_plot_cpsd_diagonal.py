@@ -26,6 +26,7 @@ from pathlib import Path
 
 import matplotlib
 matplotlib.use('Agg')  # headless
+import matplotlib.pyplot as plt
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
@@ -537,20 +538,33 @@ def test_independent_grid_loads_unsliced(tmp_path=None):
 
 
 def test_config_rejects_comparison_kinds_on_independent_grid(tmp_path=None):
-    """box/error/validation_db need a shared grid; lines does not."""
-    print("Test 12: comparison kinds rejected on independent grid...")
+    """box/error difference the two spectra and need a shared grid.
+
+    validation_db does not: it degrades to the dB overlay panel alone.
+    """
+    print("Test 12: difference kinds rejected on independent grid...")
     out = _out_dir(tmp_path)
     f_val = [150.0, 250.0, 350.0]
 
-    for kind in ('box', 'error', 'validation_db'):
+    for kind in ('box', 'error'):
         cfg = _indep_grid_config(out, 4, 3, f_val, kind=kind)
         try:
             validate_config(cfg)
             raise AssertionError(f"expected ValueError for kind '{kind}'")
         except ValueError as e:
             msg = str(e)
-            assert kind in msg, msg
             assert 'validation_frequencies' in msg, msg
+            # The offending-kinds list must name exactly this kind, so
+            # validation_db is never branded an offender.
+            assert f"plot kinds ['{kind}']" in msg, msg
+
+    # validation_db is accepted on an independent grid.
+    cfg = _indep_grid_config(out, 4, 3, f_val, kind='validation_db')
+    assert validate_config(cfg)['plot']['kind'] == ['validation_db']
+
+    # ... including alongside lines.
+    cfg = _indep_grid_config(out, 4, 3, f_val, kind=['lines', 'validation_db'])
+    assert validate_config(cfg)['plot']['kind'] == ['lines', 'validation_db']
 
     # A mixed list is rejected too, naming only the offending kinds.
     cfg = _indep_grid_config(out, 4, 3, f_val, kind=['lines', 'error'])
@@ -648,6 +662,143 @@ def test_lines_long_format_csv(tmp_path=None):
     print("  ok")
 
 
+# ---------------------------------------------------------------------------
+# validation_db on an independent grid: overlay panel only
+# ---------------------------------------------------------------------------
+
+
+def test_validation_db_independent_grid_single_panel():
+    """Independent grid -> one axes and no dL stats; shared grid -> two."""
+    print("Test 15: validation_db single-panel on independent grid...")
+    f_sol = np.array([100.0, 200.0, 300.0, 400.0])
+    f_val = np.array([150.0, 250.0, 350.0])
+    sol = np.array([[1.0, 2.0, 3.0, 4.0], [2.0, 3.0, 4.0, 5.0]])
+    val = np.array([[1.5, 2.5, 3.5], [2.5, 3.5, 4.5]])
+    selection = [(0, 'node 0'), (1, 'node 1')]
+    plot_cfg = _db_config(Path('unused.png'))['plot']
+
+    # Independent grid: single panel, no stats, each series on its own x.
+    fig, stats, _nc = rp._render_db_figure(
+        sol, val, f_sol, selection, 'Frequency [Hz]', plot_cfg,
+        title='t', show_sensor_legend=True, val_freq_axis=f_val,
+    )
+    assert len(fig.axes) == 1, [ax.get_ylabel() for ax in fig.axes]
+    assert stats is None, stats
+    xs = [ln.get_xdata() for ln in fig.axes[0].lines if len(ln.get_xdata())]
+
+    def _drawn(target):
+        return any(len(x) == len(target) and np.allclose(x, target)
+                   for x in xs)
+
+    assert _drawn(f_sol), 'solution drawn on its own grid'
+    assert _drawn(f_val), 'validation drawn on its own grid'
+    plt.close(fig)
+
+    # Shared grid: unchanged two-panel figure with real stats.
+    fig2, stats2, _nc2 = rp._render_db_figure(
+        sol, sol * 1.5, f_sol, selection, 'Frequency [Hz]', plot_cfg,
+        title='t', show_sensor_legend=True,
+    )
+    assert len(fig2.axes) == 2, len(fig2.axes)
+    assert stats2 is not None and np.isclose(stats2[0], 10 * np.log10(1.5))
+    plt.close(fig2)
+    print("  ok")
+
+
+def _indep_db_run(out, top_n=None, per_sensor=True, save_csv=True):
+    """Run validation_db end-to-end on an independent grid."""
+    f_val = [150.0, 250.0, 350.0, 450.0, 550.0, 650.0]
+    cfg = _indep_grid_config(out, 4, 6, f_val, kind='validation_db',
+                             save_csv=save_csv)
+    cfg['output']['figure_path'] = str(out / 'db.png')
+    cfg['output']['top_n'] = top_n
+    cfg['output']['per_sensor'] = per_sensor
+    cfg['plot']['db_ref'] = 1.0
+    cfg['plot']['db_floor'] = 1e-12
+    with _fake_interpolator(_CENTROIDS):
+        rp.run(validate_config(cfg))
+    return cfg, len(f_val)
+
+
+def test_validation_db_independent_grid_csv(tmp_path=None):
+    """Long-format dB CSV; no error-stats file when there is no dL."""
+    print("Test 16: validation_db independent-grid CSV...")
+    out = _out_dir(tmp_path)
+    cfg, n_freq_val = _indep_db_run(out, per_sensor=False)
+    n_freq_sol, n_loc = 4, 2
+
+    fig_path = Path(cfg['output']['figure_path'])
+    assert fig_path.exists()
+
+    with open(fig_path.with_suffix('.csv'), newline='') as f:
+        rows = list(csv.reader(f))
+    assert rows[0] == ['series', 'frequency', 'index', 'label', 'level_db'], \
+        rows[0]
+    body = rows[1:]
+    assert len(body) == n_loc * (n_freq_sol + n_freq_val), len(body)
+    sol_f = sorted({float(r[1]) for r in body if r[0] == 'computed'})
+    val_f = sorted({float(r[1]) for r in body if r[0] == 'measured'})
+    assert sol_f == [100.0, 200.0, 300.0, 400.0], sol_f
+    assert val_f == [150.0, 250.0, 350.0, 450.0, 550.0, 650.0], val_f
+
+    # No dL exists, so no error summary may be written.
+    stats_path = fig_path.with_name(f'{fig_path.stem}_error_stats.csv')
+    assert not stats_path.exists(), 'error stats must not be written'
+    print("  ok")
+
+
+def test_per_sensor_order_falls_back_to_selection_order(tmp_path=None):
+    """Without dL there is nothing to rank by: selection order, capped."""
+    print("Test 17: per-sensor order falls back to selection order...")
+    out = _out_dir(tmp_path)
+    _indep_db_run(out, top_n=1, per_sensor=True, save_csv=False)
+
+    subdir = out / 'per_sensor'
+    written = sorted(p.name for p in subdir.glob('sensor_*.png'))
+    # Selection is coordinates 0 then 1 -> faces 0, 1. Capped at 1 => face 0,
+    # which is the FIRST selected, not the worst (no error metric exists).
+    assert written == ['sensor_0.png'], written
+    print("  ok")
+
+
+def test_legend_sits_outside_axes():
+    """Legends are anchored right of the axes so they stop crowding curves."""
+    print("Test 18: legend outside the axes...")
+    freq = np.array([100.0, 200.0, 300.0])
+    sol = np.array([[1.0, 2.0, 3.0], [2.0, 3.0, 4.0]])
+    selection = [(0, 'node 0'), (1, 'node 1')]
+
+    cfg = {
+        'plot': {'kind': ['lines'], 'log_scale': True, 'title': 't',
+                 'ylabel': 'S', 'xlabel': None, 'figsize': [6, 4],
+                 'ylim': None, 'xlim': None, 'db_ref': 1.0,
+                 'db_floor': 1e-12},
+        'output': {'figure_path': 'x.png', 'figure_format': 'png', 'dpi': 60,
+                   'save_selection_csv': False, 'top_n': None,
+                   'per_sensor': False},
+    }
+
+    def _anchor_x(ax):
+        leg = ax.get_legend()
+        assert leg is not None, 'no legend drawn'
+        return leg.get_bbox_to_anchor().transformed(ax.transAxes.inverted()).x0
+
+    fig, ax = plt.subplots()
+    ax.plot([0, 1], [0, 1], label='node 0')
+    rp._legend_outside(ax)
+    assert _anchor_x(ax) > 1.0, _anchor_x(ax)
+    plt.close(fig)
+
+    # The dB overlay legend is anchored outside too.
+    fig2, _stats, _nc = rp._render_db_figure(
+        sol, sol * 1.2, freq, selection, 'Frequency [Hz]', cfg['plot'],
+        title='t', show_sensor_legend=True,
+    )
+    assert _anchor_x(fig2.axes[0]) > 1.0
+    plt.close(fig2)
+    print("  ok")
+
+
 def run_all_tests() -> bool:
     print("=" * 60)
     print("Running CPSD Diagonal Plotting Tests")
@@ -667,6 +818,10 @@ def run_all_tests() -> bool:
         test_config_rejects_comparison_kinds_on_independent_grid,
         test_config_rejects_index_axis_with_independent_grid,
         test_lines_long_format_csv,
+        test_validation_db_independent_grid_single_panel,
+        test_validation_db_independent_grid_csv,
+        test_per_sensor_order_falls_back_to_selection_order,
+        test_legend_sits_outside_axes,
     ]
     passed = failed = 0
     for t in tests:
