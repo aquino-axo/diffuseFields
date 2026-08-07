@@ -666,6 +666,7 @@ The output `.npy` is accompanied by a sidecar `.json` with the frequencies (if k
 - `"box"` — at each frequency, the distribution of `S_ii(f)` across the selected locations as side-by-side solution/validation boxes (IQR box, 5th/95th-percentile whiskers); switches to median + percentile bands above 40 frequencies. *Requires validation.*
 - `"error"` — per-location relative-L2 error of the solution vs validation autopower spectrum, `‖S_ii^sol − S_ii^val‖₂ / ‖S_ii^val‖₂`, as a bar chart sorted worst → best (optional `output.top_n` cap). Ranks which sensors the inversion reproduces best/worst. *Requires validation.*
 - `"validation_db"` — decibel comparison as a stacked two-panel figure. **Top:** the level `L = 10·log10(S_ii / db_ref)` in dB for the **computed** (solid) and **measured** (dashed) spectra. **Bottom:** the signed level error `ΔL = 10·log10(S_meas / S_comp)` per location (reference cancels, so none is needed), with a highlight box reporting `max|ΔL|` and `median|ΔL|`. A combined "all sensors" figure is written to `output.figure_path`; individual per-sensor figures go to a `per_sensor/` subdirectory (`output.per_sensor`, worst-first capped by `output.top_n`). Terminology follows the measured/computed convention. *Requires validation.*
+- `"envelope"` — min–max spread of `S_ii(f)` **across all selected sensors** at each frequency, in dB: a shaded band per series (computed and measured) with the **energetic mean** `10·log10(mean_i(S_ii)/db_ref)` as its centre line. Averaging the powers before converting is the field's energy average, the convention in acoustic qualification; averaging dB values instead yields the geometric mean, which is always lower. Needs no paired frequencies, so it works on an independent grid; without a validation set only the computed band is drawn. Aggregate by construction — `output.per_sensor` and `output.top_n` do not apply.
 
 ```bash
 python run_plot_cpsd_diagonal.py config_plot_cpsd_diagonal.json
@@ -696,6 +697,7 @@ Which kinds work then follows from whether they *difference* the two spectra:
 | Kind | Independent grid? |
 |---|---|
 | `"lines"` | Yes — two overlaid curves |
+| `"envelope"` | Yes — the statistic is taken within each series |
 | `"validation_db"` | Yes, but **top panel only**: `ΔL` is a ratio at one frequency, so the error panel, its `max/median` box, and `*_error_stats.csv` are all omitted |
 | `"box"` | No — boxes sit on categorical per-frequency positions |
 | `"error"` | No — relative-L2 is a pointwise difference |

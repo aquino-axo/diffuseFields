@@ -799,6 +799,108 @@ def test_legend_sits_outside_axes():
     print("  ok")
 
 
+# ---------------------------------------------------------------------------
+# envelope: min / energetic-mean / max across sensors, in dB
+# ---------------------------------------------------------------------------
+
+
+def test_envelope_statistics():
+    """Band is the true min/max; the centre line is the ENERGETIC mean."""
+    print("Test 19: envelope statistics...")
+    # Two sensors, two frequencies. Column 0 spans 1 -> 100 (0 -> 20 dB);
+    # column 1 is uniform at 4 (both sensors 6.0206 dB).
+    S = np.array([[1.0, 4.0],
+                  [100.0, 4.0]])
+    stats = rp.envelope_stats(S, db_ref=1.0, db_floor=1e-12)
+
+    assert np.allclose(stats.lo, [0.0, 10 * np.log10(4)]), stats.lo
+    assert np.allclose(stats.hi, [20.0, 10 * np.log10(4)]), stats.hi
+
+    # Energetic mean: average the POWERS, then convert.
+    assert np.allclose(stats.mean,
+                       10 * np.log10([50.5, 4.0])), stats.mean
+
+    # The distinguishing property: averaging powers is strictly louder than
+    # averaging dB values whenever the sensors differ. A naive
+    # mean(to_db(...)) implementation gives 10 dB here and fails.
+    mean_of_db = np.mean(10 * np.log10(S), axis=0)
+    assert stats.mean[0] > mean_of_db[0] + 5.0, (stats.mean[0], mean_of_db[0])
+    # Uniform column: every definition agrees.
+    assert np.isclose(stats.mean[1], mean_of_db[1])
+
+    # The band always encloses its centre line.
+    assert np.all(stats.lo <= stats.mean + 1e-12)
+    assert np.all(stats.mean <= stats.hi + 1e-12)
+    print("  ok")
+
+
+def test_envelope_independent_grid_csv(tmp_path=None):
+    """Two bands on their own grids, one axes, long-format CSV."""
+    print("Test 20: envelope on an independent grid...")
+    out = _out_dir(tmp_path)
+    n_freq_sol, n_freq_val = 4, 6
+    f_val = [150.0, 250.0, 350.0, 450.0, 550.0, 650.0]
+
+    cfg = _indep_grid_config(out, n_freq_sol, n_freq_val, f_val,
+                             kind='envelope')
+    cfg['output']['figure_path'] = str(out / 'env.png')
+    with _fake_interpolator(_CENTROIDS):
+        rp.run(validate_config(cfg))
+
+    fig_path = Path(cfg['output']['figure_path'])
+    assert fig_path.exists()
+
+    with open(fig_path.with_suffix('.csv'), newline='') as f:
+        rows = list(csv.reader(f))
+    assert rows[0] == ['series', 'frequency', 'statistic', 'level_db'], rows[0]
+    body = rows[1:]
+    # 3 statistics per frequency per series.
+    assert len(body) == 3 * (n_freq_sol + n_freq_val), len(body)
+    assert {r[2] for r in body} == {'min', 'mean', 'max'}
+    sol_f = sorted({float(r[1]) for r in body if r[0] == 'computed'})
+    val_f = sorted({float(r[1]) for r in body if r[0] == 'measured'})
+    assert sol_f == [100.0, 200.0, 300.0, 400.0], sol_f
+    assert val_f == f_val, val_f
+
+    # min <= mean <= max at every frequency of every series.
+    by_key = {(r[0], r[1], r[2]): float(r[3]) for r in body}
+    for series, freq in {(r[0], r[1]) for r in body}:
+        lo = by_key[(series, freq, 'min')]
+        mid = by_key[(series, freq, 'mean')]
+        hi = by_key[(series, freq, 'max')]
+        assert lo <= mid + 1e-9 <= hi + 1e-9, (series, freq, lo, mid, hi)
+    print("  ok")
+
+
+def test_config_envelope_allowed_on_independent_grid(tmp_path=None):
+    """envelope needs no pairing and no validation file."""
+    print("Test 21: envelope config acceptance...")
+    out = _out_dir(tmp_path)
+    f_val = [150.0, 250.0, 350.0]
+
+    # Accepted alongside an independent validation grid.
+    cfg = _indep_grid_config(out, 4, 3, f_val, kind='envelope')
+    assert validate_config(cfg)['plot']['kind'] == ['envelope']
+
+    # Accepted with no validation data at all: the computed band alone.
+    cfg = _indep_grid_config(out, 4, 3, None, kind='envelope')
+    cfg['input']['validation_path'] = None
+    cfg['input']['validation_frequencies'] = None
+    cfg['selection'] = {'indices': [0, 1, 2], 'coordinates': None,
+                        'match_tolerance': None}
+    cfg['output']['figure_path'] = str(out / 'env_solo.png')
+    validated = validate_config(cfg)
+    assert validated['plot']['kind'] == ['envelope']
+    rp.run(validated)
+    assert (out / 'env_solo.png').exists()
+
+    with open((out / 'env_solo.csv'), newline='') as f:
+        rows = list(csv.reader(f))
+    assert {r[0] for r in rows[1:]} == {'computed'}
+    assert len(rows) - 1 == 3 * 4
+    print("  ok")
+
+
 def run_all_tests() -> bool:
     print("=" * 60)
     print("Running CPSD Diagonal Plotting Tests")
@@ -822,6 +924,9 @@ def run_all_tests() -> bool:
         test_validation_db_independent_grid_csv,
         test_per_sensor_order_falls_back_to_selection_order,
         test_legend_sits_outside_axes,
+        test_envelope_statistics,
+        test_envelope_independent_grid_csv,
+        test_config_envelope_allowed_on_independent_grid,
     ]
     passed = failed = 0
     for t in tests:

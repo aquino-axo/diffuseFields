@@ -1,5 +1,5 @@
 {
-    "_comment": "Validation measured on its OWN frequency grid. Only 'lines' and 'validation_db' are available; 'box' and 'error' difference the two spectra point by point and are rejected. validation_db draws its dB overlay panel only, since the level error dL needs paired frequencies.",
+    "_comment": "Validation measured on its OWN frequency grid. Only 'lines', 'envelope', and 'validation_db' are available; 'box' and 'error' difference the two spectra point by point and are rejected. validation_db draws its dB overlay panel only, since the level error dL needs paired frequencies.",
     "input": {
         "diagonal_npy_path": "results_cpsd_inverse/full_cpsd_diag.npy",
         "sidecar_json_path": "results_cpsd_inverse/full_cpsd_diag.json",
@@ -21,7 +21,7 @@
         "match_tolerance": 0.05
     },
     "plot": {
-        "kind": ["lines", "validation_db"],
+        "kind": ["lines", "envelope", "validation_db"],
         "log_scale": true,
         "title": "Uplifted CPSD diagonal: measured vs computed",
         "ylabel": "S_ii",

@@ -8,7 +8,7 @@ sidecar JSON. Entries to plot can be specified by integer indices into the
 sideset-face dimension and/or by physical (x, y, z) coordinates, in which
 case the nearest sideset face centroid is used.
 
-Three plot kinds are supported via `plot.kind` (a string or a list):
+Five plot kinds are supported via `plot.kind` (a string or a list):
 
   * ``"lines"`` - per-location autopower vs frequency. The inverse solution is
     drawn solid and the validation data dashed, sharing one colour per
@@ -32,6 +32,13 @@ Three plot kinds are supported via `plot.kind` (a string or a list):
     ``per_sensor/`` subdirectory (``output.per_sensor``), capped worst-first
     by ``output.top_n``. On an independent frequency grid only the top panel
     is drawn (see below), and ``output.top_n`` then caps in selection order.
+  * ``"envelope"`` - min-max spread *across all selected sensors* at each
+    frequency, in dB, as a shaded band per series (computed and measured) with
+    the **energetic mean** ``10*log10(mean_i(S_ii)/db_ref)`` as its centre
+    line. The statistic is taken within each series, so this kind needs no
+    paired frequencies and works on an independent grid. Without a validation
+    file only the computed band is drawn. Aggregate by construction, so
+    ``output.per_sensor`` and ``output.top_n`` do not apply.
 
 The ``box``, ``error`` and ``validation_db`` kinds require a validation file.
 A validation file requires the selection to be given as ``coordinates``
@@ -45,11 +52,11 @@ The validation data's frequency axis is handled in one of two modes:
   * **Independent grid** (``input.validation_frequencies`` set to a path, an
     inline list, or ``{min, step, max}``). The validation data carries its own
     frequency vector and is not sliced; each series is drawn against its own
-    frequencies. ``lines`` and ``validation_db`` both work here -- the latter
-    rendering its dB overlay panel alone, since the level error ``dL`` needs
-    paired frequencies. ``box`` and ``error`` difference the two spectra
-    outright and are rejected, rather than papered over by interpolating the
-    measurement onto the solution's grid.
+    frequencies. ``lines``, ``envelope`` and ``validation_db`` all work here --
+    the last rendering its dB overlay panel alone, since the level error
+    ``dL`` needs paired frequencies. ``box`` and ``error`` difference the two
+    spectra outright and are rejected, rather than papered over by
+    interpolating the measurement onto the solution's grid.
 
 Usage:
     python run_plot_cpsd_diagonal.py config_plot_cpsd_diagonal.json
@@ -60,7 +67,7 @@ import csv
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -72,10 +79,11 @@ from frequency_spec import load_frequency_spec
 # of discrete side-by-side boxes (which would be unreadable).
 BAND_FREQ_THRESHOLD = 40
 
-VALID_KINDS = ('lines', 'box', 'error', 'validation_db')
+VALID_KINDS = ('lines', 'box', 'error', 'validation_db', 'envelope')
 
-# Kinds that need a validation data set at all.
-SHARED_GRID_KINDS = ('box', 'error', 'validation_db')
+# Kinds that cannot be drawn without a validation data set. `lines` and
+# `envelope` are absent: both degrade to the solution series alone.
+REQUIRES_VALIDATION_KINDS = ('box', 'error', 'validation_db')
 
 # Kinds that *difference* the two spectra and so need both on one grid: the
 # relative-L2 error, and the per-frequency distributions drawn side by side on
@@ -91,6 +99,7 @@ FREQ_INDEX_LABEL = 'Frequency index'
 # sample different frequencies so a shared frequency column is ill-defined.
 LINES_CSV_HEADER = ('series', 'frequency', 'index', 'label', 'value')
 DB_CSV_HEADER = ('series', 'frequency', 'index', 'label', 'level_db')
+ENVELOPE_CSV_HEADER = ('series', 'frequency', 'statistic', 'level_db')
 
 # On the combined validation_db overlay, show the per-sensor colour legend only
 # when the sensor count is at or below this; above it, only the computed/
@@ -217,7 +226,7 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
             )
     config['plot']['kind'] = kinds  # normalise to list
 
-    needs_validation = [k for k in kinds if k in SHARED_GRID_KINDS]
+    needs_validation = [k for k in kinds if k in REQUIRES_VALIDATION_KINDS]
     if needs_validation and not has_validation:
         raise ValueError(
             f"plot kinds {needs_validation} require input.validation_path"
@@ -758,7 +767,7 @@ def plot_error(
 
 
 # --------------------------------------------------------------------------
-# validation_db: dB overlay + signed level-error, combined and per-sensor
+# dB helpers, shared by the validation_db and envelope kinds
 # --------------------------------------------------------------------------
 
 def to_db(values: np.ndarray, ref: float, floor_rel: float
@@ -1109,6 +1118,121 @@ def plot_validation_db(
         print(f"  wrote {len(order)} per-sensor figure(s) to {subdir}")
 
 
+# --------------------------------------------------------------------------
+# envelope: min / energetic-mean / max across sensors, in dB
+# --------------------------------------------------------------------------
+
+class EnvelopeStats(NamedTuple):
+    """Per-frequency spread across sensors, in dB. Each field is (n_freq,)."""
+    lo: np.ndarray        # quietest sensor
+    mean: np.ndarray      # energetic (power) mean over sensors
+    hi: np.ndarray        # loudest sensor
+    n_clamped: int
+
+
+def envelope_stats(S: np.ndarray, db_ref: float,
+                   db_floor: float) -> EnvelopeStats:
+    """
+    Spread of ``S (n_loc, n_freq)`` across locations, at each frequency, in dB.
+
+    ``lo``/``hi`` are the quietest and loudest sensor. Because ``10*log10`` is
+    monotone, taking them before or after the conversion is equivalent.
+
+    ``mean`` is the **energetic** mean -- the powers are averaged and *then*
+    converted, ``10*log10(mean_i(S_i)/ref)``. That is the spatial average of
+    the field's energy, and the convention in acoustic qualification. Averaging
+    the dB values instead would give the geometric mean of the powers, which is
+    always lower and carries no energy interpretation.
+    """
+    levels, n_clamped = to_db(S, db_ref, db_floor)
+    mean_power = np.mean(np.asarray(S, dtype=float), axis=0, keepdims=True)
+    mean_level, n_clamped_mean = to_db(mean_power, db_ref, db_floor)
+    return EnvelopeStats(
+        lo=levels.min(axis=0),
+        mean=mean_level[0],
+        hi=levels.max(axis=0),
+        n_clamped=n_clamped + n_clamped_mean,
+    )
+
+
+def plot_envelope(
+    sol_sel: np.ndarray,
+    val_sel: Optional[np.ndarray],
+    freq_axis: np.ndarray,
+    xlabel: str,
+    config: Dict[str, Any],
+    fig_path: Path,
+    val_freq_axis: Optional[np.ndarray] = None,
+) -> None:
+    """
+    Min-max envelope across all selected sensors, computed vs measured, in dB.
+
+    The statistic is taken *within* each series, so the two may be sampled on
+    different frequency grids; ``val_freq_axis`` gives the validation data its
+    own. Without a validation set only the computed band is drawn.
+    """
+    plot_cfg = config['plot']
+    out_cfg = config['output']
+    db_ref, db_floor = plot_cfg['db_ref'], plot_cfg['db_floor']
+    val_freq = freq_axis if val_freq_axis is None else val_freq_axis
+
+    n_sensors = sol_sel.shape[0]
+    if n_sensors < 2:
+        print(f"  envelope: only {n_sensors} sensor selected, so the band "
+              f"collapses onto its centre line")
+
+    series = [('computed', sol_sel, freq_axis, 'tab:blue', '-')]
+    if val_sel is not None:
+        series.append(('measured', val_sel, val_freq, 'tab:orange', '--'))
+
+    fig, ax = plt.subplots(figsize=tuple(plot_cfg['figsize']))
+    computed: List[Tuple[str, np.ndarray, EnvelopeStats]] = []
+    total_clamped = 0
+    for name, data, axis, color, style in series:
+        st = envelope_stats(data, db_ref, db_floor)
+        total_clamped += st.n_clamped
+        computed.append((name, axis, st))
+        ax.fill_between(axis, st.lo, st.hi, color=color, alpha=0.25,
+                        label=f'{name} min-max')
+        ax.plot(axis, st.lo, style, color=color, lw=0.8, alpha=0.8)
+        ax.plot(axis, st.hi, style, color=color, lw=0.8, alpha=0.8)
+        ax.plot(axis, st.mean, style, color=color, lw=2.0,
+                label=f'{name} energetic mean')
+
+    if total_clamped:
+        print(f"  envelope: clamped {total_clamped} non-positive/near-zero "
+              f"sample(s) to the relative floor (plot.db_floor={db_floor:g})")
+
+    ax.set_xlabel(plot_cfg['xlabel'] or xlabel)
+    ax.set_ylabel(f"{plot_cfg['ylabel']} level [dB re {db_ref:g}]")
+    ax.set_title(plot_cfg['title'])
+    if plot_cfg['ylim'] is not None:
+        ax.set_ylim(plot_cfg['ylim'])
+    if plot_cfg['xlim'] is not None:
+        ax.set_xlim(plot_cfg['xlim'])
+    ax.grid(True, alpha=0.3)
+    _legend_outside(ax)
+    fig.tight_layout()
+    _save_fig(fig, fig_path, out_cfg['dpi'])
+    print(f"  envelope over {n_sensors} sensor(s)")
+
+    if out_cfg['save_selection_csv']:
+        csv_path = fig_path.with_suffix('.csv')
+        # Long format: the two series may sample different frequencies, so a
+        # shared frequency column would not be well defined.
+        with open(csv_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(ENVELOPE_CSV_HEADER)
+            for name, axis, st in computed:
+                for j, freq in enumerate(axis):
+                    for stat, values in (('min', st.lo), ('mean', st.mean),
+                                         ('max', st.hi)):
+                        writer.writerow(
+                            [name, float(freq), stat, float(values[j])]
+                        )
+        print(f"Saved CSV to {csv_path}")
+
+
 def run(config: Dict[str, Any]) -> None:
     inp = config['input']
     kinds = config['plot']['kind']
@@ -1194,6 +1318,9 @@ def run(config: Dict[str, Any]) -> None:
         elif kind == 'validation_db':
             plot_validation_db(sol_sel, val_sel, freq_axis, selection, xlabel,
                                config, fig_path, val_freq_axis=val_freq_axis)
+        elif kind == 'envelope':
+            plot_envelope(sol_sel, val_sel, freq_axis, xlabel, config,
+                          fig_path, val_freq_axis=val_freq_axis)
 
 
 def main():

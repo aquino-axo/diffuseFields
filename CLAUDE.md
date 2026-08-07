@@ -80,12 +80,14 @@ No build step or package manager required. Dependencies: NumPy, SciPy, Matplotli
 - `parse_frequency_spec(spec, field_name)` accepts a list or `{min, step, max}` (expanded inclusively of `max` when it lands on a step, otherwise stopping below it); `load_frequency_spec` additionally accepts a path to a 1-D `.npy` or single-variable `.mat`
 - `field_name` is the caller's dotted config path and is interpolated into every error message. The other drivers (`run_cone_analysis.py`, `run_total_field.py`) still carry their own `parse_frequencies` copies
 
-**run_plot_cpsd_diagonal.py** - Plots the uplifted CPSD diagonal vs frequency, optionally overlaid with validation data (`config_plot_cpsd_diagonal.json`). Kinds: `lines`, `box`, `error`, `validation_db`. The validation frequency axis has two modes:
+**run_plot_cpsd_diagonal.py** - Plots the uplifted CPSD diagonal vs frequency, optionally overlaid with validation data (`config_plot_cpsd_diagonal.json`). Kinds: `lines`, `box`, `error`, `validation_db`, `envelope`. The validation frequency axis has two modes:
 - **Shared grid** (default): the validation array spans the inversion's full frequency set and is sliced by the sidecar's `freq_indices`; all four kinds available
 - **Independent grid** (`input.validation_frequencies` set): validation carries its own frequency vector, nothing is sliced, and each series is drawn against its own frequencies. Also requires a sidecar carrying `frequencies` (an index x-axis cannot be overlaid with Hz)
 - Which kinds survive an independent grid follows from whether they *difference* the two spectra. `lines` works. `validation_db` works but renders its **dB overlay panel only** — the `ΔL` panel, its max/median box, and `*_error_stats.csv` are all omitted, and `db_error` is never called. `box` (categorical per-frequency positions) and `error` (pointwise relative-L2) are **rejected** — deliberately not resolved by interpolating the measurement onto the solution's grid
 - On an independent grid `output.top_n` degrades from "the N worst sensors" to "the first N selected" (nothing to rank by); the driver prints this
 - CSVs go long format where a shared frequency column would be ill-defined: `lines` always (`series,frequency,index,label,value`), `validation_db` on independent grids (`series,frequency,index,label,level_db`)
+- `envelope` shows the min-max spread across all selected sensors in dB, one band per series, centred on the **energetic mean** `10*log10(mean_i(S_ii)/ref)` (average powers *then* convert — the field's energy average; averaging dB values gives the geometric mean, always lower). Taken within each series, so it needs no paired frequencies and works on independent grids; needs no validation file either. Aggregate, so `per_sensor`/`top_n` do not apply
+- `REQUIRES_VALIDATION_KINDS` = kinds that cannot be drawn without validation data; `DIFFERENCE_KINDS` = kinds additionally needing one shared grid. The two are distinct: `validation_db` is in the first only
 - Legends are anchored outside the axes via `_legend_outside`; `_save_fig` uses `bbox_inches='tight'` so they are not clipped
 
 ## Key Physics
