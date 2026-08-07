@@ -1002,6 +1002,42 @@ coordinate count), point `input.validation_path` at a
 `_validation_db.png`, the latter accompanied by per-sensor figures under
 `results_cpsd_inverse/per_sensor/sensor_<faceidx>.png`.
 
+#### Validation on its own frequency grid
+
+If the measurement was taken at different frequencies than the inversion,
+add its frequency vector and drop the two kinds that cannot survive it.
+A ready-to-edit template ships as
+[`config_plot_cpsd_diagonal_indep_grid.example.json`](../config_plot_cpsd_diagonal_indep_grid.example.json):
+
+```json
+"input": {
+  "validation_path": "data/validation_cpsd.mat",
+  "validation_var":  "G_val",
+  "validation_frequencies": "data/f_val.npy"
+},
+"plot": { "kind": ["lines", "validation_db"] }
+```
+
+```bash
+python src/run_plot_cpsd_diagonal.py \
+    config_plot_cpsd_diagonal_indep_grid.example.json
+```
+
+Expected stdout, confirming nothing was sliced and the error panel was
+dropped rather than interpolated into existence:
+
+```text
+Loaded validation diagonal: shape=(4, 25)
+  validation on its own grid: [80, 900]
+Saved plot to results_cpsd_inverse/diagonal_vs_frequency_lines.png
+  db: independent frequency grids -> overlay panel only; the level error
+  dL is undefined without paired frequencies
+Saved plot to results_cpsd_inverse/diagonal_vs_frequency_validation_db.png
+```
+
+Leaving `box` or `error` in `plot.kind` fails immediately, naming only
+those two and pointing at the kinds that do work.
+
 ### 9.5 Tear-down
 
 ```bash

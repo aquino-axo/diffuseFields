@@ -1,0 +1,44 @@
+{
+    "_comment": "Validation measured on its OWN frequency grid. Only 'lines' and 'validation_db' are available; 'box' and 'error' difference the two spectra point by point and are rejected. validation_db draws its dB overlay panel only, since the level error dL needs paired frequencies.",
+    "input": {
+        "diagonal_npy_path": "results_cpsd_inverse/full_cpsd_diag.npy",
+        "sidecar_json_path": "results_cpsd_inverse/full_cpsd_diag.json",
+        "exodus_file": "data/cube.e",
+        "sideset_id": 6,
+        "validation_path": "data/validation_cpsd.mat",
+        "validation_var": "G_val",
+        "_validation_frequencies_forms": "path to a 1-D .npy / single-variable .mat, an inline list [10, 15, 20], or {\"min\": 10, \"step\": 5, \"max\": 200}",
+        "validation_frequencies": "data/f_val.npy"
+    },
+    "selection": {
+        "indices": null,
+        "coordinates": [
+            [0.375, 0.5, 0.375],
+            [0.125, 0.5, 0.375],
+            [-0.125, 0.5, 0.125],
+            [-0.375, 0.5, -0.375]
+        ],
+        "match_tolerance": 0.05
+    },
+    "plot": {
+        "kind": ["lines", "validation_db"],
+        "log_scale": true,
+        "title": "Uplifted CPSD diagonal: measured vs computed",
+        "ylabel": "S_ii",
+        "xlabel": null,
+        "figsize": [10, 6],
+        "ylim": null,
+        "xlim": null,
+        "db_ref": 1.0,
+        "db_floor": 1e-12
+    },
+    "output": {
+        "figure_path": "results_cpsd_inverse/diagonal_vs_frequency.png",
+        "figure_format": "png",
+        "dpi": 150,
+        "save_selection_csv": true,
+        "_top_n_note": "on an independent grid this caps in SELECTION order, not worst-error order",
+        "top_n": null,
+        "per_sensor": true
+    }
+}

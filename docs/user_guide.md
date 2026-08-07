@@ -671,7 +671,40 @@ The output `.npy` is accompanied by a sidecar `.json` with the frequencies (if k
 python run_plot_cpsd_diagonal.py config_plot_cpsd_diagonal.json
 ```
 
-The validation data is a full CPSD `(n_loc, n_loc, n_freq_full)` (complex) supplied via `input.validation_path` (+ `input.validation_var` for `.mat`). Its real diagonal is aligned to the solution **by `selection.coordinates` order** — validation row `k` is the `k`-th coordinate — so a validation set requires coordinate selection. Its frequency axis must span the full inversion frequency set; it is sliced to the reconstructed subset via the sidecar's `freq_indices`. See [`docs/cpsd_inversion_guide.md`](cpsd_inversion_guide.md) §8 for the full config-key reference, alignment rules, and CSV-export details.
+The validation data is a full CPSD `(n_loc, n_loc, n_freq_full)` (complex) supplied via `input.validation_path` (+ `input.validation_var` for `.mat`). Its real diagonal is aligned to the solution **by `selection.coordinates` order** — validation row `k` is the `k`-th coordinate — so a validation set requires coordinate selection.
+
+#### Validation on its own frequency grid
+
+By default the validation array must span the full inversion frequency set, and is sliced to the reconstructed subset via the sidecar's `freq_indices`. When the measurement was taken at **different frequencies** than the inversion, set `input.validation_frequencies` to the measurement's own frequency vector:
+
+```json
+"input": {
+  "diagonal_npy_path": "results_cpsd_inverse/full_cpsd_diag.npy",
+  "sidecar_json_path":  "results_cpsd_inverse/full_cpsd_diag.json",
+  "exodus_file": "data/cube.e",
+  "sideset_id":  6,
+  "validation_path": "data/validation_cpsd.mat",
+  "validation_var":  "G_val",
+  "validation_frequencies": "data/f_val.npy"
+}
+```
+
+It accepts a path to a 1-D `.npy` or single-variable `.mat`, an inline list `[10, 15, 20]`, or `{"min": 10, "step": 5, "max": 200}`. Its length must equal the validation array's third dimension. Nothing is sliced, and each series is drawn against its own frequencies.
+
+Which kinds work then follows from whether they *difference* the two spectra:
+
+| Kind | Independent grid? |
+|---|---|
+| `"lines"` | Yes — two overlaid curves |
+| `"validation_db"` | Yes, but **top panel only**: `ΔL` is a ratio at one frequency, so the error panel, its `max/median` box, and `*_error_stats.csv` are all omitted |
+| `"box"` | No — boxes sit on categorical per-frequency positions |
+| `"error"` | No — relative-L2 is a pointwise difference |
+
+`box` and `error` are rejected up front rather than resolved by interpolating the measurement onto the solution's grid; a resampled "measurement" invites reading interpolation artifacts as physics. On independent grids the driver never calls `db_error`, so no reported number can come from an interpolated sample. To compare numerically across differing grids, resample deliberately upstream and supply the result as a shared-grid validation set.
+
+Two further effects in this mode: the `validation_db` CSV becomes long format (`series,frequency,index,label,level_db`), and `output.top_n` — normally "the N worst sensors" — degrades to "the first N selected", since no error exists to rank by. The driver prints this on every such run. The solution also needs a physical x-axis: a sidecar without `frequencies` (so the solution is plotted against its frequency *index*) is rejected, because overlaying an index axis with Hz would render a plausible-looking wrong figure.
+
+See [`docs/cpsd_inversion_guide.md`](cpsd_inversion_guide.md) §8 for the full config-key reference, alignment rules, and CSV-export details.
 
 ### Programmatic Usage
 
